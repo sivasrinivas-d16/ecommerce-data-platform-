@@ -1,5 +1,4 @@
 import boto3
-from botocore.exceptions import ClientError
 
 
 # =========================================================
@@ -91,6 +90,29 @@ def provision_customers_job(glue_client):
 
 
 # =========================================================
+# Start Glue Job
+# =========================================================
+
+def start_customers_job(glue_client):
+
+    response = glue_client.start_job_run(
+        JobName=CUSTOMERS_JOB_NAME
+    )
+
+    run_id = response["JobRunId"]
+
+    print(
+        f"STARTED: {CUSTOMERS_JOB_NAME}"
+    )
+
+    print(
+        f"Glue Job Run ID: {run_id}"
+    )
+
+    return run_id
+
+
+# =========================================================
 # Main
 # =========================================================
 
@@ -100,10 +122,16 @@ def main():
     print("Glue Job Provisioning")
     print("=" * 70)
 
-    print("AWS Region:", AWS_REGION)
-    print("Glue Role:", GLUE_ROLE)
+    print(
+        "AWS Region:",
+        AWS_REGION
+    )
 
-    # IMPORTANT:
+    print(
+        "Glue Role:",
+        GLUE_ROLE
+    )
+
     # GitHub Actions provides AWS credentials
     # through environment variables.
     #
@@ -113,9 +141,17 @@ def main():
         region_name=AWS_REGION
     )
 
-    glue_client = session.client("glue")
+    glue_client = session.client(
+        "glue"
+    )
 
+    # Create or update the Glue job
     provision_customers_job(
+        glue_client
+    )
+
+    # Automatically start the Glue job
+    start_customers_job(
         glue_client
     )
 
