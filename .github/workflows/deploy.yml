@@ -10,9 +10,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # =====================================================
+      # Checkout Repository
+      # =====================================================
       - name: Checkout repository
         uses: actions/checkout@v5
 
+      # =====================================================
+      # Configure AWS Credentials
+      # =====================================================
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
@@ -20,34 +26,62 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-southeast-2
 
+      # =====================================================
+      # Verify AWS Identity
+      # =====================================================
       - name: Verify AWS identity
         run: |
           aws sts get-caller-identity
 
+      # =====================================================
+      # Upload Source Code
+      # =====================================================
       - name: Upload source code
         run: |
           aws s3 sync src/ \
             s3://ecommerce-data-platform-version1/code/src/
 
+      # =====================================================
+      # Upload Validation + Quality Glue Scripts
+      # =====================================================
       - name: Upload validation and quality Glue scripts
         run: |
           aws s3 sync src/validation_quality/ \
             s3://ecommerce-data-platform-version1/code/src/validation_quality/
 
+      # =====================================================
+      # Upload Schemas
+      # =====================================================
       - name: Upload schemas
         run: |
           aws s3 sync schemas/ \
             s3://ecommerce-data-platform-version1/code/schemas/
 
+      # =====================================================
+      # Register Glue Catalog Tables
+      # =====================================================
       - name: Register Glue Catalog tables
         run: |
           python src/utils/register_glue_tables.py
 
+      # =====================================================
+      # Provision / Update Glue Jobs
+      # =====================================================
+      - name: Provision Glue jobs
+        run: |
+          python src/utils/provision_glue_jobs.py
+
+      # =====================================================
+      # Upload Documentation
+      # =====================================================
       - name: Upload documentation
         run: |
           aws s3 sync docs/ \
             s3://ecommerce-data-platform-version1/code/docs/
 
+      # =====================================================
+      # Verify S3 Deployment
+      # =====================================================
       - name: Verify S3 deployment
         run: |
           aws s3 ls \
