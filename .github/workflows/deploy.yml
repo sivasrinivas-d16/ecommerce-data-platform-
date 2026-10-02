@@ -21,15 +21,23 @@ jobs:
           aws-region: ap-southeast-2
 
       - name: Verify AWS identity
-        run: aws sts get-caller-identity
+        run: |
+          aws sts get-caller-identity
 
       - name: Upload source code
         run: |
-          aws s3 sync src/ s3://ecommerce-data-platform-version1/code/src/
+          aws s3 sync src/ \
+            s3://ecommerce-data-platform-version1/code/src/
+
+      - name: Upload validation and quality Glue scripts
+        run: |
+          aws s3 sync src/validation_quality/ \
+            s3://ecommerce-data-platform-version1/code/src/validation_quality/
 
       - name: Upload schemas
         run: |
-          aws s3 sync schemas/ s3://ecommerce-data-platform-version1/code/schemas/
+          aws s3 sync schemas/ \
+            s3://ecommerce-data-platform-version1/code/schemas/
 
       - name: Register Glue Catalog tables
         run: |
@@ -37,9 +45,11 @@ jobs:
 
       - name: Upload documentation
         run: |
-          aws s3 sync docs/ s3://ecommerce-data-platform-version1/code/docs/
+          aws s3 sync docs/ \
+            s3://ecommerce-data-platform-version1/code/docs/
 
       - name: Verify S3 deployment
         run: |
-          aws s3 ls s3://ecommerce-data-platform-version1/code/ --recursive
-
+          aws s3 ls \
+            s3://ecommerce-data-platform-version1/code/ \
+            --recursive

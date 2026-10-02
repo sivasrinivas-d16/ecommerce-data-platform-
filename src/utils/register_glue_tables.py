@@ -161,6 +161,66 @@ def register_table(glue_client, schema):
 
         print(f"CREATED: {table_name}")
 
+def register_curated_customers(glue_client):
+    table_name = "customers_curated"
+
+    table_input = {
+        "Name": table_name,
+        "Description": "Curated customer data produced by AWS Glue ETL",
+        "TableType": "EXTERNAL_TABLE",
+        "Parameters": {
+            "classification": "parquet",
+            "typeOfData": "file"
+        },
+        "StorageDescriptor": {
+            "Columns": [
+                {"Name": "customer_id", "Type": "string"},
+                {"Name": "name", "Type": "string"},
+                {"Name": "email", "Type": "string"},
+                {"Name": "city", "Type": "string"},
+                {"Name": "state", "Type": "string"},
+                {"Name": "country", "Type": "string"},
+                {"Name": "signup_date", "Type": "date"},
+                {"Name": "signup_year", "Type": "int"},
+                {"Name": "signup_month", "Type": "int"},
+                {"Name": "signup_day", "Type": "int"},
+                {"Name": "tenure_days", "Type": "int"},
+                {"Name": "customer_status", "Type": "string"}
+            ],
+            "Location": (
+                "s3://ecommerce-data-platform-version1/"
+                "curated/customers/"
+            ),
+            "InputFormat": "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat",
+            "OutputFormat": "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat",
+            "SerdeInfo": {
+                "SerializationLibrary": (
+                    "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
+                )
+            }
+        }
+    }
+
+    try:
+        glue_client.get_table(
+            DatabaseName=GLUE_DATABASE,
+            Name=table_name
+        )
+
+        glue_client.update_table(
+            DatabaseName=GLUE_DATABASE,
+            TableInput=table_input
+        )
+
+        print(f"UPDATED: {table_name}")
+
+    except glue_client.exceptions.EntityNotFoundException:
+        glue_client.create_table(
+            DatabaseName=GLUE_DATABASE,
+            TableInput=table_input
+        )
+
+        print(f"CREATED: {table_name}")
 
 # ---------------------------------------------------------
 # Main
@@ -177,7 +237,10 @@ def main():
     print(f"Schema Dir : {SCHEMA_DIR}")
     print()
 
-    session = boto3.Session(region_name=AWS_REGION)
+    session = boto3.Session(
+    profile_name="github-actions-ecommerce",
+    region_name=AWS_REGION
+    )
     glue_client = session.client("glue")
 
     schema_files = sorted(
@@ -213,6 +276,9 @@ def main():
     print("Glue table registration completed")
     print("=" * 60)
 
+
+    print("Registering curated tables...")
+    register_curated_customers(glue_client)
 
 if __name__ == "__main__":
     main()
