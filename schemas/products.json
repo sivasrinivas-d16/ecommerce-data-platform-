@@ -1,0 +1,52 @@
+{
+  "dataset": "products",
+  "description": "Product master data",
+  "fields": [
+    {
+      "name": "product_id",
+      "type": "string",
+      "required": true,
+      "unique": true
+    },
+    {
+      "name": "product_name",
+      "type": "string",
+      "required": true
+    },
+    {
+      "name": "category",
+      "type": "string",
+      "required": true
+    },
+    {
+      "name": "subcategory",
+      "type": "string",
+      "required": false
+    },
+    {
+      "name": "brand",
+      "type": "string",
+      "required": true
+    },
+    {
+      "name": "price",
+      "type": "decimal",
+      "required": true
+    },
+    {
+      "name": "stock_quantity",
+      "type": "integer",
+      "required": true
+    },
+    {
+      "name": "product_status",
+      "type": "string",
+      "required": true
+    },
+    {
+      "name": "created_date",
+      "type": "date",
+      "required": true
+    }
+  ]
+}

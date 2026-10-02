@@ -1,0 +1,50 @@
+{
+  "dataset": "payments",
+  "description": "Payment transaction data for customer orders",
+  "fields": [
+    {
+      "name": "payment_id",
+      "type": "string",
+      "required": true,
+      "unique": true
+    },
+    {
+      "name": "order_id",
+      "type": "string",
+      "required": true,
+      "unique": false
+    },
+    {
+      "name": "customer_id",
+      "type": "string",
+      "required": true,
+      "unique": false
+    },
+    {
+      "name": "payment_method",
+      "type": "string",
+      "required": true
+    },
+    {
+      "name": "payment_status",
+      "type": "string",
+      "required": true
+    },
+    {
+      "name": "payment_amount",
+      "type": "decimal",
+      "required": true
+    },
+    {
+      "name": "transaction_reference",
+      "type": "string",
+      "required": true,
+      "unique": true
+    },
+    {
+      "name": "payment_timestamp",
+      "type": "timestamp",
+      "required": true
+    }
+  ]
+}

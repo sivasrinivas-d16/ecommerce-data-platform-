@@ -1,0 +1,27 @@
+name: AWS Connection Test
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  aws-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ "<AWS_ACCESS_KEY_ID>" }}
+          aws-secret-access-key: ${{ "<AWS_SECRET_ACCESS_KEY>" }}
+          aws-region: ap-southeast-2
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Verify S3 access
+        run: aws s3 ls s3://ecommerce-data-platform-version1

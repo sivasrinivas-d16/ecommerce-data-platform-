@@ -1,0 +1,50 @@
+{
+  "dataset": "events",
+  "description": "Real-time e-commerce customer and order events",
+  "fields": [
+    {
+      "name": "event_id",
+      "type": "string",
+      "required": true,
+      "unique": true
+    },
+    {
+      "name": "event_type",
+      "type": "string",
+      "required": true
+    },
+    {
+      "name": "customer_id",
+      "type": "string",
+      "required": true,
+      "unique": false
+    },
+    {
+      "name": "order_id",
+      "type": "string",
+      "required": false,
+      "unique": false
+    },
+    {
+      "name": "product_id",
+      "type": "string",
+      "required": false,
+      "unique": false
+    },
+    {
+      "name": "event_timestamp",
+      "type": "timestamp",
+      "required": true
+    },
+    {
+      "name": "source",
+      "type": "string",
+      "required": true
+    },
+    {
+      "name": "payload",
+      "type": "string",
+      "required": false
+    }
+  ]
+}

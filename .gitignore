@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Spark
+data/streaming/checkpoints/
+data/streaming/spark-warehouse/
+spark-warehouse/
+metastore_db/
+
+# Generated / runtime data
+data/raw/
+data/processed/
+data/curated/
+data/analytics/
+
+# Large generated datasets
+data/*.csv
+data/*.parquet
+data/*.xlsx
+data/*.zip
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Environment / secrets
+.env
+.env.*
+*.pem
+*.key

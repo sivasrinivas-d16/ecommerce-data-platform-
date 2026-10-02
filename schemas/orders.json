@@ -1,0 +1,54 @@
+{
+  "dataset": "orders",
+  "description": "Customer order transaction data",
+  "fields": [
+    {
+      "name": "order_id",
+      "type": "string",
+      "required": true,
+      "unique": true
+    },
+    {
+      "name": "customer_id",
+      "type": "string",
+      "required": true,
+      "unique": false
+    },
+    {
+      "name": "product_id",
+      "type": "string",
+      "required": true,
+      "unique": false
+    },
+    {
+      "name": "quantity",
+      "type": "integer",
+      "required": true
+    },
+    {
+      "name": "unit_price",
+      "type": "decimal",
+      "required": true
+    },
+    {
+      "name": "order_amount",
+      "type": "decimal",
+      "required": true
+    },
+    {
+      "name": "order_status",
+      "type": "string",
+      "required": true
+    },
+    {
+      "name": "payment_status",
+      "type": "string",
+      "required": true
+    },
+    {
+      "name": "order_timestamp",
+      "type": "timestamp",
+      "required": true
+    }
+  ]
+}

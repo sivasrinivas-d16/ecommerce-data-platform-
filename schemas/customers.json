@@ -1,0 +1,42 @@
+{
+  "dataset": "customers",
+  "description": "Customer master data",
+  "fields": [
+    {
+      "name": "customer_id",
+      "type": "string",
+      "required": true,
+      "unique": true
+    },
+    {
+      "name": "name",
+      "type": "string",
+      "required": true
+    },
+    {
+      "name": "email",
+      "type": "string",
+      "required": true
+    },
+    {
+      "name": "city",
+      "type": "string",
+      "required": false
+    },
+    {
+      "name": "state",
+      "type": "string",
+      "required": false
+    },
+    {
+      "name": "country",
+      "type": "string",
+      "required": true
+    },
+    {
+      "name": "signup_date",
+      "type": "date",
+      "required": true
+    }
+  ]
+}
