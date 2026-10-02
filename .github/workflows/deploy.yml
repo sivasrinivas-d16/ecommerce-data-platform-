@@ -31,6 +31,11 @@ jobs:
         run: |
           aws s3 sync schemas/ s3://ecommerce-data-platform-version1/code/schemas/
 
+      - name: Register Glue Catalog tables
+        run: |
+          python src/utils/register_glue_tables.py
+
+        
       - name: Upload documentation
         run: |
           aws s3 sync docs/ s3://ecommerce-data-platform-version1/code/docs/
@@ -38,3 +43,4 @@ jobs:
       - name: Verify S3 deployment
         run: |
           aws s3 ls s3://ecommerce-data-platform-version1/code/ --recursive
+

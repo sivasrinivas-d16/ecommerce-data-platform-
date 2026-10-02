@@ -177,11 +177,7 @@ def main():
     print(f"Schema Dir : {SCHEMA_DIR}")
     print()
 
-    session = boto3.Session(
-        profile_name="github-actions-ecommerce",
-        region_name=AWS_REGION,
-    )
-
+    session = boto3.Session(region_name=AWS_REGION)
     glue_client = session.client("glue")
 
     schema_files = sorted(
