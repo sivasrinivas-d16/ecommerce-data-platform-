@@ -31,10 +31,6 @@ jobs:
         run: |
           aws s3 sync schemas/ s3://ecommerce-data-platform-version1/code/schemas/
 
-      - name: Upload configuration
-        run: |
-          aws s3 sync config/ s3://ecommerce-data-platform-version1/code/config/
-
       - name: Upload documentation
         run: |
           aws s3 sync docs/ s3://ecommerce-data-platform-version1/code/docs/
