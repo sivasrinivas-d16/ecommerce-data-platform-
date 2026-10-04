@@ -55,7 +55,7 @@ jobs:
       - name: Upload schemas
         run: |
           aws s3 sync schemas/ \
-            s3://ecommerce-data-platform-version1/code/schemas/
+          s3://ecommerce-data-platform-version1/code/schemas/
 
       # =====================================================
       # Register Glue Catalog Tables
@@ -70,6 +70,13 @@ jobs:
       - name: Provision Glue jobs
         run: |
           python src/utils/provision_glue_jobs.py
+
+      # =====================================================
+      # Deploy / Update Step Functions
+      # =====================================================
+      - name: Deploy Step Functions
+        run: |
+          python src/utils/provision_step_function.py
 
       # =====================================================
       # Upload Documentation
