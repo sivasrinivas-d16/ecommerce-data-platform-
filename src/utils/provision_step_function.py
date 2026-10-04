@@ -17,50 +17,68 @@ STEP_FUNCTION_ROLE = (
     "role/StepFunctions-EcommerceRole"
 )
 
-VALIDATION_JOB_NAME = (
+
+# =========================================================
+# Glue Jobs
+# =========================================================
+
+CUSTOMERS_ETL_JOB = (
+    "ecommerce-customers-etl"
+)
+
+CUSTOMERS_VALIDATION_JOB = (
     "ecommerce-customers-validation-quality"
 )
 
-TRANSFORMATION_JOB_NAME = (
+CUSTOMERS_TRANSFORMATION_JOB = (
     "ecommerce-customers-transformation"
 )
 
 
 # =========================================================
-# Step Functions Definition
+# State Machine Definition
 # =========================================================
 
 STATE_MACHINE_DEFINITION = {
-  "Comment": "E-Commerce Customers ETL Pipeline",
-  "StartAt": "Customers ETL",
-  "States": {
-    "Customers ETL": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::glue:startJobRun.sync",
-      "Parameters": {
-        "JobName": "ecommerce-customers-etl"
-      },
-      "Next": "Customers Validation Quality"
-    },
+    "Comment": "E-Commerce Customers ETL Pipeline",
 
-    "Customers Validation Quality": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::glue:startJobRun.sync",
-      "Parameters": {
-        "JobName": "ecommerce-customers-validation-quality"
-      },
-      "Next": "Customers Transformation"
-    },
+    "StartAt": "Customers ETL",
 
-    "Customers Transformation": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::glue:startJobRun.sync",
-      "Parameters": {
-        "JobName": "ecommerce-customers-transformation"
-      },
-      "End": true
+    "States": {
+
+        "Customers ETL": {
+            "Type": "Task",
+            "Resource": (
+                "arn:aws:states:::glue:startJobRun.sync"
+            ),
+            "Parameters": {
+                "JobName": CUSTOMERS_ETL_JOB
+            },
+            "Next": "Customers Validation Quality"
+        },
+
+        "Customers Validation Quality": {
+            "Type": "Task",
+            "Resource": (
+                "arn:aws:states:::glue:startJobRun.sync"
+            ),
+            "Parameters": {
+                "JobName": CUSTOMERS_VALIDATION_JOB
+            },
+            "Next": "Customers Transformation"
+        },
+
+        "Customers Transformation": {
+            "Type": "Task",
+            "Resource": (
+                "arn:aws:states:::glue:startJobRun.sync"
+            ),
+            "Parameters": {
+                "JobName": CUSTOMERS_TRANSFORMATION_JOB
+            },
+            "End": True
+        }
     }
-  }
 }
 
 
@@ -74,60 +92,60 @@ def provision_state_machine(sfn_client):
         STATE_MACHINE_DEFINITION
     )
 
-    try:
+    response = sfn_client.list_state_machines()
 
-        response = sfn_client.list_state_machines()
+    existing_state_machine = None
 
-        existing_state_machine = None
+    for state_machine in response["stateMachines"]:
 
-        for machine in response["stateMachines"]:
+        if state_machine["name"] == STATE_MACHINE_NAME:
 
-            if machine["name"] == STATE_MACHINE_NAME:
-                existing_state_machine = machine
-                break
+            existing_state_machine = state_machine
 
-        if existing_state_machine:
+            break
 
-            response = sfn_client.update_state_machine(
-                stateMachineArn=(
-                    existing_state_machine[
-                        "stateMachineArn"
-                    ]
-                ),
-                definition=definition,
-                roleArn=STEP_FUNCTION_ROLE
-            )
+    # -----------------------------------------------------
+    # Update existing State Machine
+    # -----------------------------------------------------
 
-            print(
-                "UPDATED:",
-                STATE_MACHINE_NAME
-            )
+    if existing_state_machine:
 
-            return response["stateMachineArn"]
+        state_machine_arn = (
+            existing_state_machine["stateMachineArn"]
+        )
 
-        response = sfn_client.create_state_machine(
-            name=STATE_MACHINE_NAME,
+        sfn_client.update_state_machine(
+            stateMachineArn=state_machine_arn,
             definition=definition,
-            roleArn=STEP_FUNCTION_ROLE,
-            type="STANDARD"
+            roleArn=STEP_FUNCTION_ROLE
         )
 
         print(
-            "CREATED:",
-            STATE_MACHINE_NAME
+            f"UPDATED: {STATE_MACHINE_NAME}"
         )
 
-        return response["stateMachineArn"]
+        return state_machine_arn
 
-    except Exception as error:
+    # -----------------------------------------------------
+    # Create new State Machine
+    # -----------------------------------------------------
 
-        print(
-            "Step Functions deployment failed:"
-        )
+    response = sfn_client.create_state_machine(
+        name=STATE_MACHINE_NAME,
+        definition=definition,
+        roleArn=STEP_FUNCTION_ROLE,
+        type="STANDARD"
+    )
 
-        print(error)
+    state_machine_arn = response[
+        "stateMachineArn"
+    ]
 
-        raise
+    print(
+        f"CREATED: {STATE_MACHINE_NAME}"
+    )
+
+    return state_machine_arn
 
 
 # =========================================================
@@ -141,7 +159,7 @@ def main():
     print("=" * 70)
 
     print(
-        "Region:",
+        "AWS Region:",
         AWS_REGION
     )
 
