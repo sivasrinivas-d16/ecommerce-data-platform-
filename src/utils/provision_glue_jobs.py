@@ -275,9 +275,9 @@ def main():
         glue_client
     )
 
-    start_customers_validation_job(
-        glue_client
-    )
+    # start_customers_validation_job(
+    #     glue_client
+    # )
 
     # -----------------------------------------------------
     # Transformation
@@ -287,9 +287,9 @@ def main():
         glue_client
     )
 
-    start_customers_transformation_job(
-        glue_client
-    )
+    # start_customers_transformation_job(
+    #     glue_client
+    # )
 
     print("=" * 70)
     print("Glue Job Provisioning Completed")
