@@ -9,9 +9,16 @@ AWS_REGION = "ap-southeast-2"
 
 GLUE_ROLE = "AWSGlueServiceRole-ecommerce"
 
-CUSTOMERS_JOB_NAME = "ecommerce-customers-validation-quality"
 
-CUSTOMERS_SCRIPT_LOCATION = (
+# =========================================================
+# Customer Validation + Quality
+# =========================================================
+
+CUSTOMERS_VALIDATION_JOB_NAME = (
+    "ecommerce-customers-validation-quality"
+)
+
+CUSTOMERS_VALIDATION_SCRIPT_LOCATION = (
     "s3://ecommerce-data-platform-version1/"
     "code/src/validation_quality/"
     "glue_customers_validation_quality.py"
@@ -19,18 +26,36 @@ CUSTOMERS_SCRIPT_LOCATION = (
 
 
 # =========================================================
-# Create / Update Glue Job
+# Customer Transformation
 # =========================================================
 
-def provision_customers_job(glue_client):
+CUSTOMERS_TRANSFORMATION_JOB_NAME = (
+    "ecommerce-customers-transformation"
+)
 
-    job_command = {
+CUSTOMERS_TRANSFORMATION_SCRIPT_LOCATION = (
+    "s3://ecommerce-data-platform-version1/"
+    "code/src/transformation/"
+    "transform_customers.py"
+)
+
+
+# =========================================================
+# Common Glue Job Configuration
+# =========================================================
+
+def get_job_command(script_location):
+
+    return {
         "Name": "glueetl",
-        "ScriptLocation": CUSTOMERS_SCRIPT_LOCATION,
+        "ScriptLocation": script_location,
         "PythonVersion": "3"
     }
 
-    job_arguments = {
+
+def get_job_arguments():
+
+    return {
         "--job-language": "python",
         "--enable-metrics": "true",
         "--enable-continuous-cloudwatch-log": "true",
@@ -40,14 +65,23 @@ def provision_customers_job(glue_client):
             "processed/spark-events/"
     }
 
+
+# =========================================================
+# Create / Update Customer Validation + Quality Job
+# =========================================================
+
+def provision_customers_validation_job(glue_client):
+
     job_input = {
-        "Name": CUSTOMERS_JOB_NAME,
+        "Name": CUSTOMERS_VALIDATION_JOB_NAME,
         "Role": GLUE_ROLE,
         "ExecutionProperty": {
             "MaxConcurrentRuns": 1
         },
-        "Command": job_command,
-        "DefaultArguments": job_arguments,
+        "Command": get_job_command(
+            CUSTOMERS_VALIDATION_SCRIPT_LOCATION
+        ),
+        "DefaultArguments": get_job_arguments(),
         "GlueVersion": "5.1",
         "WorkerType": "G.1X",
         "NumberOfWorkers": 2,
@@ -58,15 +92,16 @@ def provision_customers_job(glue_client):
     try:
 
         glue_client.get_job(
-            JobName=CUSTOMERS_JOB_NAME
+            JobName=CUSTOMERS_VALIDATION_JOB_NAME
         )
 
         print(
-            f"Glue job exists: {CUSTOMERS_JOB_NAME}"
+            f"Glue job exists: "
+            f"{CUSTOMERS_VALIDATION_JOB_NAME}"
         )
 
         glue_client.update_job(
-            JobName=CUSTOMERS_JOB_NAME,
+            JobName=CUSTOMERS_VALIDATION_JOB_NAME,
             JobUpdate={
                 key: value
                 for key, value in job_input.items()
@@ -75,7 +110,8 @@ def provision_customers_job(glue_client):
         )
 
         print(
-            f"UPDATED: {CUSTOMERS_JOB_NAME}"
+            f"UPDATED: "
+            f"{CUSTOMERS_VALIDATION_JOB_NAME}"
         )
 
     except glue_client.exceptions.EntityNotFoundException:
@@ -85,24 +121,110 @@ def provision_customers_job(glue_client):
         )
 
         print(
-            f"CREATED: {CUSTOMERS_JOB_NAME}"
+            f"CREATED: "
+            f"{CUSTOMERS_VALIDATION_JOB_NAME}"
         )
 
 
 # =========================================================
-# Start Glue Job
+# Create / Update Customer Transformation Job
 # =========================================================
 
-def start_customers_job(glue_client):
+def provision_customers_transformation_job(glue_client):
+
+    job_input = {
+        "Name": CUSTOMERS_TRANSFORMATION_JOB_NAME,
+        "Role": GLUE_ROLE,
+        "ExecutionProperty": {
+            "MaxConcurrentRuns": 1
+        },
+        "Command": get_job_command(
+            CUSTOMERS_TRANSFORMATION_SCRIPT_LOCATION
+        ),
+        "DefaultArguments": get_job_arguments(),
+        "GlueVersion": "5.1",
+        "WorkerType": "G.1X",
+        "NumberOfWorkers": 2,
+        "Timeout": 15,
+        "MaxRetries": 0
+    }
+
+    try:
+
+        glue_client.get_job(
+            JobName=CUSTOMERS_TRANSFORMATION_JOB_NAME
+        )
+
+        print(
+            f"Glue job exists: "
+            f"{CUSTOMERS_TRANSFORMATION_JOB_NAME}"
+        )
+
+        glue_client.update_job(
+            JobName=CUSTOMERS_TRANSFORMATION_JOB_NAME,
+            JobUpdate={
+                key: value
+                for key, value in job_input.items()
+                if key != "Name"
+            }
+        )
+
+        print(
+            f"UPDATED: "
+            f"{CUSTOMERS_TRANSFORMATION_JOB_NAME}"
+        )
+
+    except glue_client.exceptions.EntityNotFoundException:
+
+        glue_client.create_job(
+            **job_input
+        )
+
+        print(
+            f"CREATED: "
+            f"{CUSTOMERS_TRANSFORMATION_JOB_NAME}"
+        )
+
+
+# =========================================================
+# Start Customer Validation + Quality Job
+# =========================================================
+
+def start_customers_validation_job(glue_client):
 
     response = glue_client.start_job_run(
-        JobName=CUSTOMERS_JOB_NAME
+        JobName=CUSTOMERS_VALIDATION_JOB_NAME
     )
 
     run_id = response["JobRunId"]
 
     print(
-        f"STARTED: {CUSTOMERS_JOB_NAME}"
+        f"STARTED: "
+        f"{CUSTOMERS_VALIDATION_JOB_NAME}"
+    )
+
+    print(
+        f"Glue Job Run ID: {run_id}"
+    )
+
+    return run_id
+
+
+# =========================================================
+# Start Customer Transformation Job
+# =========================================================
+
+def start_customers_transformation_job(glue_client):
+
+    response = glue_client.start_job_run(
+        JobName=CUSTOMERS_TRANSFORMATION_JOB_NAME
+    )
+
+    run_id = response["JobRunId"]
+
+    print(
+        f"STARTED: "
+        f"{CUSTOMERS_TRANSFORMATION_JOB_NAME}"
     )
 
     print(
@@ -145,13 +267,27 @@ def main():
         "glue"
     )
 
-    # Create or update the Glue job
-    provision_customers_job(
+    # -----------------------------------------------------
+    # Validation + Quality
+    # -----------------------------------------------------
+
+    provision_customers_validation_job(
         glue_client
     )
 
-    # Automatically start the Glue job
-    start_customers_job(
+    start_customers_validation_job(
+        glue_client
+    )
+
+    # -----------------------------------------------------
+    # Transformation
+    # -----------------------------------------------------
+
+    provision_customers_transformation_job(
+        glue_client
+    )
+
+    start_customers_transformation_job(
         glue_client
     )
 
