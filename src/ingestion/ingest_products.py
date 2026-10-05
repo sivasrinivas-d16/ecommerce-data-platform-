@@ -1,4 +1,8 @@
-from pyspark.sql import SparkSession
+import sys
+
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from pyspark.context import SparkContext
 from pyspark.sql.types import (
     StructType,
     StructField,
@@ -9,24 +13,34 @@ from pyspark.sql.types import (
 )
 
 
-# ---------------------------------------------------------
-# Spark Session
-# ---------------------------------------------------------
+# ============================================================
+# 1. Initialize Glue
+# ============================================================
 
-spark = (
-    SparkSession.builder
-    .appName("ECommerceProductIngestion")
-    .master("local[2]")
-    .config("spark.driver.host", "127.0.0.1")
-    .config("spark.driver.bindAddress", "127.0.0.1")
-    .config("spark.hadoop.fs.permissions.umask-mode", "000")
-    .getOrCreate()
-)
+sc = SparkContext()
+glue_context = GlueContext(sc)
+spark = glue_context.spark_session
+
+job = Job(glue_context)
+
+args = {
+    arg[2:]: sys.argv[i + 1]
+    for i, arg in enumerate(sys.argv)
+    if arg.startswith("--")
+    and i + 1 < len(sys.argv)
+    and not sys.argv[i + 1].startswith("--")
+}
+
+job_name = args.get("JOB_NAME", "ecommerce-products-etl")
+
+job.init(job_name, {
+    "JOB_NAME": job_name
+})
 
 
-# ---------------------------------------------------------
-# Product Schema
-# ---------------------------------------------------------
+# ============================================================
+# 2. Product Schema
+# ============================================================
 
 product_schema = StructType([
     StructField("product_id", StringType(), True),
@@ -41,52 +55,89 @@ product_schema = StructType([
 ])
 
 
-# ---------------------------------------------------------
-# Source Path
-# ---------------------------------------------------------
+# ============================================================
+# 3. Source and Raw Output
+# ============================================================
 
-products_path = r".\ecommerce-data-platform\data\products.csv"
+source_path = (
+    "s3://ecommerce-data-platform-version1/"
+    "raw/products/products.csv"
+)
+
+raw_output_path = (
+    "s3://ecommerce-data-platform-version1/"
+    "raw/products_parquet/"
+)
 
 
-# ---------------------------------------------------------
-# Read Product Data
-# ---------------------------------------------------------
+# ============================================================
+# 4. Read Products CSV
+# ============================================================
+
+print("Reading Products source:")
+print(source_path)
 
 products_df = (
     spark.read
     .option("header", True)
     .schema(product_schema)
-    .csv(products_path)
+    .csv(source_path)
 )
 
-print("Products loaded successfully")
-print("Row count:", products_df.count())
 
+# ============================================================
+# 5. Basic Verification
+# ============================================================
+
+record_count = products_df.count()
+
+print(f"Products record count: {record_count}")
+
+if record_count == 0:
+    raise RuntimeError(
+        "Products ETL failed: source contains zero records."
+    )
+
+
+print("Products schema:")
 products_df.printSchema()
-products_df.show(5, truncate=False)
 
-# ---------------------------------------------------------
-# Raw Product Layer
-# ---------------------------------------------------------
 
-raw_products_path = r".\ecommerce-data-platform\data\raw\products"
+# ============================================================
+# 6. Write Raw Parquet
+# ============================================================
+
+print("Writing Products raw Parquet:")
 
 (
-    products_df.write
+    products_df
+    .write
     .mode("overwrite")
-    .parquet(raw_products_path)
+    .parquet(raw_output_path)
 )
 
-print("\nProducts written successfully to Raw layer.")
+
+# ============================================================
+# 7. Verify Output
+# ============================================================
+
+output_df = spark.read.parquet(raw_output_path)
+
+output_count = output_df.count()
+
+print(f"Raw Products output count: {output_count}")
+
+if record_count != output_count:
+    raise RuntimeError(
+        f"Products ETL count mismatch: "
+        f"input={record_count}, output={output_count}"
+    )
+
+print("Products ETL completed successfully.")
 
 
-# ---------------------------------------------------------
-# Verify Raw Layer
-# ---------------------------------------------------------
+# ============================================================
+# 8. Commit Glue Job
+# ============================================================
 
-raw_products_df = spark.read.parquet(raw_products_path)
-
-print("\nRaw product row count:", raw_products_df.count())
-
-print("\nRaw Product Schema:")
-raw_products_df.printSchema()
+job.commit()

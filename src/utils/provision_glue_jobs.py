@@ -1,51 +1,67 @@
 import boto3
 
 
-# =========================================================
-# Configuration
-# =========================================================
+# ============================================================
+# AWS CONFIGURATION
+# ============================================================
 
 AWS_REGION = "ap-southeast-2"
 
-GLUE_ROLE = "AWSGlueServiceRole-ecommerce"
-
-
-# =========================================================
-# Customer Validation + Quality
-# =========================================================
-
-CUSTOMERS_VALIDATION_JOB_NAME = (
-    "ecommerce-customers-validation-quality"
+GLUE_ROLE_ARN = (
+    "arn:aws:iam::256130491261:"
+    "role/AWSGlueServiceRole-ecommerce"
 )
 
-CUSTOMERS_VALIDATION_SCRIPT_LOCATION = (
-    "s3://ecommerce-data-platform-version1/"
+S3_BUCKET = "ecommerce-data-platform-version1"
+
+
+# ============================================================
+# CUSTOMERS SCRIPTS
+# ============================================================
+
+CUSTOMERS_ETL_SCRIPT = (
+    f"s3://{S3_BUCKET}/"
+    "code/src/ingestion/glue_customers_etl.py"
+)
+
+CUSTOMERS_VALIDATION_QUALITY_SCRIPT = (
+    f"s3://{S3_BUCKET}/"
     "code/src/validation_quality/"
     "glue_customers_validation_quality.py"
 )
 
-
-# =========================================================
-# Customer Transformation
-# =========================================================
-
-CUSTOMERS_TRANSFORMATION_JOB_NAME = (
-    "ecommerce-customers-transformation"
-)
-
-CUSTOMERS_TRANSFORMATION_SCRIPT_LOCATION = (
-    "s3://ecommerce-data-platform-version1/"
+CUSTOMERS_TRANSFORMATION_SCRIPT = (
+    f"s3://{S3_BUCKET}/"
     "code/src/transformation/"
     "transform_customers.py"
 )
 
 
-# =========================================================
-# Common Glue Job Configuration
-# =========================================================
+# ============================================================
+# PRODUCTS SCRIPTS
+# ============================================================
+
+PRODUCTS_ETL_SCRIPT = (
+    f"s3://{S3_BUCKET}/"
+    "code/src/ingestion/ingest_products.py"
+)
+
+
+# ============================================================
+# GLUE CLIENT
+# ============================================================
+
+glue_client = boto3.client(
+    "glue",
+    region_name=AWS_REGION
+)
+
+
+# ============================================================
+# COMMON GLUE JOB CONFIGURATION
+# ============================================================
 
 def get_job_command(script_location):
-
     return {
         "Name": "glueetl",
         "ScriptLocation": script_location,
@@ -54,247 +70,165 @@ def get_job_command(script_location):
 
 
 def get_job_arguments():
-
     return {
-        "--job-language": "python",
+        "--enable-glue-datacatalog": "true",
         "--enable-metrics": "true",
         "--enable-continuous-cloudwatch-log": "true",
-        "--enable-spark-ui": "true",
-        "--spark-event-logs-path":
-            "s3://ecommerce-data-platform-version1/"
-            "processed/spark-events/"
+        "--enable-job-insights": "true"
     }
 
 
-# =========================================================
-# Create / Update Customer Validation + Quality Job
-# =========================================================
+def create_or_update_job(
+    job_name,
+    script_location
+):
+    job_config = {
+        "Role": GLUE_ROLE_ARN,
 
-def provision_customers_validation_job(glue_client):
+        "Command": get_job_command(
+            script_location
+        ),
 
-    job_input = {
-        "Name": CUSTOMERS_VALIDATION_JOB_NAME,
-        "Role": GLUE_ROLE,
+        "GlueVersion": "5.1",
+
+        "WorkerType": "G.1X",
+
+        "NumberOfWorkers": 2,
+
+        "Timeout": 15,
+
+        "MaxRetries": 0,
+
         "ExecutionProperty": {
             "MaxConcurrentRuns": 1
         },
-        "Command": get_job_command(
-            CUSTOMERS_VALIDATION_SCRIPT_LOCATION
-        ),
-        "DefaultArguments": get_job_arguments(),
-        "GlueVersion": "5.1",
-        "WorkerType": "G.1X",
-        "NumberOfWorkers": 2,
-        "Timeout": 15,
-        "MaxRetries": 0
+
+        "DefaultArguments": get_job_arguments()
     }
 
     try:
 
         glue_client.get_job(
-            JobName=CUSTOMERS_VALIDATION_JOB_NAME
-        )
-
-        print(
-            f"Glue job exists: "
-            f"{CUSTOMERS_VALIDATION_JOB_NAME}"
+            JobName=job_name
         )
 
         glue_client.update_job(
-            JobName=CUSTOMERS_VALIDATION_JOB_NAME,
-            JobUpdate={
-                key: value
-                for key, value in job_input.items()
-                if key != "Name"
-            }
+            JobName=job_name,
+            JobUpdate=job_config
         )
 
         print(
-            f"UPDATED: "
-            f"{CUSTOMERS_VALIDATION_JOB_NAME}"
+            f"Updated Glue job: {job_name}"
         )
 
     except glue_client.exceptions.EntityNotFoundException:
 
         glue_client.create_job(
-            **job_input
+            Name=job_name,
+            **job_config
         )
 
         print(
-            f"CREATED: "
-            f"{CUSTOMERS_VALIDATION_JOB_NAME}"
+            f"Created Glue job: {job_name}"
         )
 
 
-# =========================================================
-# Create / Update Customer Transformation Job
-# =========================================================
+# ============================================================
+# CUSTOMERS ETL
+# ============================================================
 
-def provision_customers_transformation_job(glue_client):
+def provision_customers_etl_job():
 
-    job_input = {
-        "Name": CUSTOMERS_TRANSFORMATION_JOB_NAME,
-        "Role": GLUE_ROLE,
-        "ExecutionProperty": {
-            "MaxConcurrentRuns": 1
-        },
-        "Command": get_job_command(
-            CUSTOMERS_TRANSFORMATION_SCRIPT_LOCATION
+    create_or_update_job(
+        job_name="ecommerce-customers-etl",
+        script_location=CUSTOMERS_ETL_SCRIPT
+    )
+
+
+# ============================================================
+# CUSTOMERS VALIDATION + QUALITY
+# ============================================================
+
+def provision_customers_validation_quality_job():
+
+    create_or_update_job(
+        job_name=(
+            "ecommerce-customers-"
+            "validation-quality"
         ),
-        "DefaultArguments": get_job_arguments(),
-        "GlueVersion": "5.1",
-        "WorkerType": "G.1X",
-        "NumberOfWorkers": 2,
-        "Timeout": 15,
-        "MaxRetries": 0
-    }
-
-    try:
-
-        glue_client.get_job(
-            JobName=CUSTOMERS_TRANSFORMATION_JOB_NAME
+        script_location=(
+            CUSTOMERS_VALIDATION_QUALITY_SCRIPT
         )
-
-        print(
-            f"Glue job exists: "
-            f"{CUSTOMERS_TRANSFORMATION_JOB_NAME}"
-        )
-
-        glue_client.update_job(
-            JobName=CUSTOMERS_TRANSFORMATION_JOB_NAME,
-            JobUpdate={
-                key: value
-                for key, value in job_input.items()
-                if key != "Name"
-            }
-        )
-
-        print(
-            f"UPDATED: "
-            f"{CUSTOMERS_TRANSFORMATION_JOB_NAME}"
-        )
-
-    except glue_client.exceptions.EntityNotFoundException:
-
-        glue_client.create_job(
-            **job_input
-        )
-
-        print(
-            f"CREATED: "
-            f"{CUSTOMERS_TRANSFORMATION_JOB_NAME}"
-        )
-
-
-# =========================================================
-# Start Customer Validation + Quality Job
-# =========================================================
-
-def start_customers_validation_job(glue_client):
-
-    response = glue_client.start_job_run(
-        JobName=CUSTOMERS_VALIDATION_JOB_NAME
     )
 
-    run_id = response["JobRunId"]
 
-    print(
-        f"STARTED: "
-        f"{CUSTOMERS_VALIDATION_JOB_NAME}"
+# ============================================================
+# CUSTOMERS TRANSFORMATION
+# ============================================================
+
+def provision_customers_transformation_job():
+
+    create_or_update_job(
+        job_name=(
+            "ecommerce-customers-"
+            "transformation"
+        ),
+        script_location=(
+            CUSTOMERS_TRANSFORMATION_SCRIPT
+        )
     )
 
-    print(
-        f"Glue Job Run ID: {run_id}"
+
+# ============================================================
+# PRODUCTS ETL
+# ============================================================
+
+def provision_products_etl_job():
+
+    create_or_update_job(
+        job_name="ecommerce-products-etl",
+        script_location=PRODUCTS_ETL_SCRIPT
     )
 
-    return run_id
 
-
-# =========================================================
-# Start Customer Transformation Job
-# =========================================================
-
-def start_customers_transformation_job(glue_client):
-
-    response = glue_client.start_job_run(
-        JobName=CUSTOMERS_TRANSFORMATION_JOB_NAME
-    )
-
-    run_id = response["JobRunId"]
-
-    print(
-        f"STARTED: "
-        f"{CUSTOMERS_TRANSFORMATION_JOB_NAME}"
-    )
-
-    print(
-        f"Glue Job Run ID: {run_id}"
-    )
-
-    return run_id
-
-
-# =========================================================
-# Main
-# =========================================================
+# ============================================================
+# MAIN
+# ============================================================
 
 def main():
 
     print("=" * 70)
-    print("Glue Job Provisioning")
+    print("Starting Glue Job Provisioning")
     print("=" * 70)
 
-    print(
-        "AWS Region:",
-        AWS_REGION
-    )
+    # --------------------------------------------------------
+    # Customers
+    # --------------------------------------------------------
 
-    print(
-        "Glue Role:",
-        GLUE_ROLE
-    )
+    print("\nProvisioning Customers jobs...")
 
-    # GitHub Actions provides AWS credentials
-    # through environment variables.
-    #
-    # Do NOT specify profile_name here.
+    provision_customers_etl_job()
 
-    session = boto3.Session(
-        region_name=AWS_REGION
-    )
+    provision_customers_validation_quality_job()
 
-    glue_client = session.client(
-        "glue"
-    )
+    provision_customers_transformation_job()
 
-    # -----------------------------------------------------
-    # Validation + Quality
-    # -----------------------------------------------------
+    # --------------------------------------------------------
+    # Products
+    # --------------------------------------------------------
 
-    provision_customers_validation_job(
-        glue_client
-    )
+    print("\nProvisioning Products jobs...")
 
-    # start_customers_validation_job(
-    #     glue_client
-    # )
+    provision_products_etl_job()
 
-    # -----------------------------------------------------
-    # Transformation
-    # -----------------------------------------------------
-
-    provision_customers_transformation_job(
-        glue_client
-    )
-
-    # start_customers_transformation_job(
-    #     glue_client
-    # )
-
-    print("=" * 70)
+    print("\n" + "=" * 70)
     print("Glue Job Provisioning Completed")
     print("=" * 70)
 
+
+# ============================================================
+# ENTRY POINT
+# ============================================================
 
 if __name__ == "__main__":
     main()
