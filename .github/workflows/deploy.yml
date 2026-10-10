@@ -99,11 +99,11 @@ jobs:
             "src/quality/quality_payments.py"
             "src/quality/quality_events.py"
             "glue_jobs/refined_layer_main.py"
-            "src/transform/transform_customers.py"
-            "src/transform/transform_products.py"
-            "src/transform/transform_orders.py"
-            "src/transform/transform_payments.py"
-            "src/transform/transform_events.py"
+            "src/transformation/transform_customers.py"
+            "src/transformation/transform_products.py"
+            "src/transformation/transform_orders.py"
+            "src/transformation/transform_payments.py"
+            "src/transformation/transform_events.py"
             "src/quality/quality_customers.py"
             "src/quality/quality_products.py"
             "src/quality/quality_orders.py"
@@ -147,11 +147,11 @@ jobs:
             src/quality/quality_payments.py \
             src/quality/quality_events.py \
             glue_jobs/refined_layer_main.py \
-            src/transform/transform_customers.py \
-            src/transform/transform_products.py \
-            src/transform/transform_orders.py \
-            src/transform/transform_payments.py \
-            src/transform/transform_events.py \
+            src/transformation/transform_customers.py \
+            src/transformation/transform_products.py \
+            src/transformation/transform_orders.py \
+            src/transformation/transform_payments.py \
+            src/transformation/transform_events.py \
           echo "Python syntax checks passed."
 
       
