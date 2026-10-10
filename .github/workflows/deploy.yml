@@ -238,7 +238,7 @@ jobs:
           )
                # Refined modules at ZIP root for direct AWS Glue imports.
           create_zip(
-              "glue_jobs",
+              "src/transformation",
               "build/refined_modules.zip",
               [
                   "transform_customers.py",
