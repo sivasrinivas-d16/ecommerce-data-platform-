@@ -396,7 +396,85 @@ def provision_quality_main_job():
         number_of_workers=5,
         timeout=180,
     )
+# ============================================================
+# 20. REFINED MAIN GLUE JOB
+# ============================================================
 
+REFINED_MAIN_JOB = "ecommerce-refined-layer"
+
+REFINED_MAIN_SCRIPT = (
+    f"s3://{S3_BUCKET}/scripts/refined/refined_layer_main.py"
+)
+
+REFINED_MODULES = (
+    f"s3://{S3_BUCKET}/scripts/refined/refined_modules.zip"
+)
+
+# ============================================================
+# 21. VERIFY REFINED FILES IN S3
+# ============================================================
+
+def verify_refined_files():
+    required_keys = [
+        "scripts/refined_layer_main.py",
+        "scripts/refined_modules.zip",
+    ]
+
+    for key in required_keys:
+        try:
+            s3_client.head_object(
+                Bucket=S3_BUCKET,
+                Key=key,
+            )
+
+            print(
+                f"Refined file verified: "
+                f"s3://{S3_BUCKET}/{key}"
+            )
+
+        except ClientError as error:
+            error_code = error.response.get(
+                "Error", {}
+            ).get("Code", "")
+
+            if error_code in (
+                "404",
+                "NoSuchKey",
+                "NotFound",
+            ):
+                raise FileNotFoundError(
+                    f"Required refined file is missing: "
+                    f"s3://{S3_BUCKET}/{key}"
+                ) from error
+
+            raise
+
+# ============================================================
+# 22. PROVISION REFINED MAIN GLUE JOB
+# ============================================================
+
+def provision_refined_main_job():
+    print("Checking refined script and module ZIP in S3...")
+
+    verify_refined_files()
+
+    refined_arguments = {
+        "--extra-py-files": REFINED_MODULES,
+        "--enable-glue-datacatalog": "true",
+    }
+
+    create_or_update_job(
+        job_name=REFINED_MAIN_JOB,
+        script_location=REFINED_MAIN_SCRIPT,
+        extra_arguments=refined_arguments,
+        worker_type="G.1X",
+        number_of_workers=5,
+        timeout=180,
+    )
+
+    print(
+        f"Refined Glue job provisioned: {REFINED_MAIN_JOB}"
+    )
 
 # ============================================================
 # 20. MAIN
@@ -419,10 +497,12 @@ def main():
     print("\nProvisioning quality main job...")
     provision_quality_main_job()
 
+    print("\nProvisioning refined main job...")
+    provision_refined_main_job()
+
     print("\n" + "=" * 70)
     print("GLUE JOB PROVISIONING COMPLETED")
     print("=" * 70)
-
 
 if __name__ == "__main__":
     main()

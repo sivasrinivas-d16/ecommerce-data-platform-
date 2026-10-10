@@ -1,137 +1,197 @@
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import trim, upper, col
-from pyspark.sql.functions import to_date, year, month, dayofmonth
-from pyspark.sql.functions import when
 
+import logging
 
-
-spark = (
-    SparkSession.builder
-    .appName("ECommercePaymentTransformation")
-    .master("local[2]")
-    .config("spark.driver.host", "127.0.0.1")
-    .config("spark.driver.bindAddress", "127.0.0.1")
-    .config("spark.hadoop.fs.permissions.umask-mode", "000")
-    .getOrCreate()
+from pyspark.sql import DataFrame
+from pyspark.sql.functions import (
+    col,
+    trim,
+    upper,
+    to_date,
+    year,
+    month,
+    dayofmonth,
+    when,
+    count,
 )
 
-raw_payments_path = r".\ecommerce-data-platform\data\raw\payments"
-
-payments_df = spark.read.parquet(raw_payments_path)
-
-print("\n--- Raw Payments ---")
-payments_df.printSchema()
-
-print(f"Raw payment count: {payments_df.count()}")
-
-payments_df.show(5, truncate=False)
-
-payments_df = (
-    payments_df
-    .withColumn("payment_method", upper(trim(col("payment_method"))))
-    .withColumn("payment_status", upper(trim(col("payment_status"))))
-    .withColumn("transaction_reference", trim(col("transaction_reference")))
+DATABASE = "ecommerce_data_platform"
+TABLE = "payments"
+OUTPUT_PATH = (
+    "s3://ecommerce-data-platform-version1/refined/payments/"
 )
 
-print("\n--- Standardized Payments ---")
+logger = logging.getLogger("RefinedPayments")
 
-payments_df.select(
+REQUIRED_COLUMNS = [
     "payment_id",
     "payment_method",
     "payment_status",
-    "transaction_reference"
-).show(10, truncate=False)
-
-payments_df = (
-    payments_df
-    .withColumn("payment_date", to_date(col("payment_timestamp")))
-    .withColumn("payment_year", year(col("payment_timestamp")))
-    .withColumn("payment_month", month(col("payment_timestamp")))
-    .withColumn("payment_day", dayofmonth(col("payment_timestamp")))
-)
-
-print("\n--- Payment Date Transformations ---")
-
-payments_df.select(
-    "payment_id",
+    "transaction_reference",
     "payment_timestamp",
-    "payment_date",
-    "payment_year",
-    "payment_month",
-    "payment_day"
-).show(10, truncate=False)
-
-payments_df = payments_df.withColumn(
-    "payment_value_category",
-    when(col("payment_amount") < 1000, "LOW_VALUE")
-    .when(col("payment_amount") <= 10000, "MEDIUM_VALUE")
-    .when(col("payment_amount") <= 50000, "HIGH_VALUE")
-    .otherwise("PREMIUM_VALUE")
-)
-
-print("\n--- Payment Value Classification ---")
-
-payments_df.select(
-    "payment_id",
     "payment_amount",
-    "payment_value_category"
-).show(10, truncate=False)
+]
 
-payments_df = payments_df.withColumn(
-    "payment_result",
-    when(col("payment_status") == "PAID", "SUCCESS")
-    .when(col("payment_status") == "FAILED", "FAILED")
-    .when(col("payment_status") == "PENDING", "PENDING")
-    .when(col("payment_status") == "REFUNDED", "REFUNDED")
-    .otherwise("UNKNOWN")
-)
 
-print("\n--- Payment Result ---")
+def validate_columns(df: DataFrame) -> None:
+    missing = sorted(set(REQUIRED_COLUMNS) - set(df.columns))
+    if missing:
+        raise ValueError(
+            f"Payments table is missing required columns: {missing}"
+        )
 
-payments_df.select(
-    "payment_id",
-    "payment_status",
-    "payment_result"
-).show(10, truncate=False)
 
-print("\n--- Payment Transformation Verification ---")
+def run_transformation(glue_context) -> dict:
+    logger.info("Starting payments refined transformation")
 
-print(f"Transformed payment count: {payments_df.count()}")
+    # 1. Read from Glue Catalog.
+    source_dyf = glue_context.create_dynamic_frame.from_catalog(
+        database=DATABASE,
+        table_name=TABLE,
+    )
+    payments_df = source_dyf.toDF()
 
-print("\nPayment Value Category Distribution:")
-payments_df.groupBy("payment_value_category").count().show()
+    validate_columns(payments_df)
 
-print("\nPayment Result Distribution:")
-payments_df.groupBy("payment_result").count().show()
+    source_count = payments_df.count()
+    logger.info("Raw payment rows: %s", source_count)
 
-print("\nFinal Payment Schema:")
-payments_df.printSchema()
+    # 2. Standardize payment fields.
+    payments_df = (
+        payments_df
+        .withColumn("payment_id", trim(col("payment_id").cast("string")))
+        .withColumn(
+            "payment_method",
+            upper(trim(col("payment_method"))),
+        )
+        .withColumn(
+            "payment_status",
+            upper(trim(col("payment_status"))),
+        )
+        .withColumn(
+            "transaction_reference",
+            trim(col("transaction_reference")),
+        )
+    )
 
-print(f"Transformed payment count: {payments_df.count()}")
+    # 3. Cast timestamp and amount.
+    payments_df = (
+        payments_df
+        .withColumn(
+            "payment_timestamp",
+            col("payment_timestamp").cast("timestamp"),
+        )
+        .withColumn(
+            "payment_amount",
+            col("payment_amount").cast("decimal(18,2)"),
+        )
+    )
 
-print("\nPayment Value Category Distribution:")
-payments_df.groupBy("payment_value_category").count().show()
+    # 4. Derive payment date dimensions.
+    payments_df = (
+        payments_df
+        .withColumn("payment_date", to_date(col("payment_timestamp")))
+        .withColumn("payment_year", year(col("payment_timestamp")))
+        .withColumn("payment_month", month(col("payment_timestamp")))
+        .withColumn("payment_day", dayofmonth(col("payment_timestamp")))
+    )
 
-print("\nPayment Result Distribution:")
-payments_df.groupBy("payment_result").count().show()
+    # 5. Classify payment amounts. Null/negative amounts are not
+    # incorrectly classified as premium-value payments.
+    payments_df = payments_df.withColumn(
+        "payment_value_category",
+        when(col("payment_amount").isNull(), "UNKNOWN")
+        .when(col("payment_amount") < 0, "INVALID")
+        .when(col("payment_amount") < 1000, "LOW_VALUE")
+        .when(col("payment_amount") <= 10000, "MEDIUM_VALUE")
+        .when(col("payment_amount") <= 50000, "HIGH_VALUE")
+        .otherwise("PREMIUM_VALUE"),
+    )
 
-curated_payments_path = r".\ecommerce-data-platform\data\curated\payments"
+    # 6. Map payment statuses.
+    payments_df = payments_df.withColumn(
+        "payment_result",
+        when(col("payment_status") == "PAID", "SUCCESS")
+        .when(col("payment_status") == "FAILED", "FAILED")
+        .when(col("payment_status") == "PENDING", "PENDING")
+        .when(col("payment_status") == "REFUNDED", "REFUNDED")
+        .otherwise("UNKNOWN"),
+    )
 
-(
-    payments_df
-    .write
-    .mode("overwrite")
-    .parquet(curated_payments_path)
-)
+    # 7. Flag invalid data without deleting records.
+    payments_df = payments_df.withColumn(
+        "payment_data_quality_status",
+        when(
+            col("payment_id").isNull()
+            | (col("payment_id") == "")
+            | col("payment_timestamp").isNull()
+            | col("payment_amount").isNull()
+            | (col("payment_amount") < 0),
+            "REVIEW",
+        ).otherwise("VALID"),
+    )
 
-print("Curated payments written successfully.")
+    # 8. Detect duplicate payment IDs.
+    duplicate_ids = (
+        payments_df
+        .filter(col("payment_id").isNotNull() & (col("payment_id") != ""))
+        .groupBy("payment_id")
+        .agg(count("*").alias("record_count"))
+        .filter(col("record_count") > 1)
+        .select("payment_id")
+    )
 
-curated_payments_df = spark.read.parquet(curated_payments_path)
+    duplicate_id_count = duplicate_ids.count()
 
-print("\n--- Curated Payments Verification ---")
-print(f"Curated payment count: {curated_payments_df.count()}")
+    if duplicate_id_count:
+        logger.warning(
+            "Found %s payment IDs with duplicate records; "
+            "records are retained for review.",
+            duplicate_id_count,
+        )
 
-curated_payments_df.printSchema()
+        payments_df = payments_df.join(
+            duplicate_ids.withColumn("_duplicate_payment_id", col("payment_id"))
+            .drop("payment_id"),
+            payments_df["payment_id"] == col("_duplicate_payment_id"),
+            "left",
+        ).withColumn(
+            "payment_data_quality_status",
+            when(
+                col("_duplicate_payment_id").isNotNull(),
+                "REVIEW",
+            ).otherwise(col("payment_data_quality_status")),
+        ).drop("_duplicate_payment_id")
 
-curated_payments_df.show(5, truncate=False)
+    # 9. Log summary distributions.
+    payments_df.groupBy("payment_data_quality_status").count().show()
+    payments_df.groupBy("payment_value_category").count().show()
+    payments_df.groupBy("payment_result").count().show()
 
+    # 10. Write refined Parquet data.
+    payments_df.write.mode("overwrite").parquet(OUTPUT_PATH)
+
+    logger.info("Refined payments written to %s", OUTPUT_PATH)
+
+    # 11. Verify output.
+    refined_df = payments_df.sparkSession.read.parquet(OUTPUT_PATH)
+    output_count = refined_df.count()
+
+    if output_count != source_count:
+        logger.warning(
+            "Payment row count changed: source=%s, refined=%s",
+            source_count,
+            output_count,
+        )
+
+    logger.info(
+        "Payments transformation completed: %s rows",
+        output_count,
+    )
+
+    return {
+        "dataset": "payments",
+        "source_count": source_count,
+        "output_count": output_count,
+        "output_path": OUTPUT_PATH,
+        "status": "SUCCESS",
+    }

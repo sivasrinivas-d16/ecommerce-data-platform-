@@ -1,296 +1,204 @@
-import sys
 
-from pyspark.context import SparkContext
+import logging
+from datetime import date
+
+from pyspark.sql import DataFrame
 from pyspark.sql.functions import (
+    col,
     trim,
     lower,
-    col,
+    to_date,
     year,
     month,
     dayofmonth,
     datediff,
     current_date,
     when,
-    to_date
+    count,
 )
 
-from awsglue.context import GlueContext
-from awsglue.job import Job
-from awsglue.utils import getResolvedOptions
-
-
-# =========================================================
-# Glue Job Initialization
-# =========================================================
-
-args = getResolvedOptions(
-    sys.argv,
-    ["JOB_NAME"]
+DATABASE = "ecommerce_data_platform"
+TABLE = "customers"
+OUTPUT_PATH = (
+    "s3://ecommerce-data-platform-version1/refined/customers/"
 )
 
-sc = SparkContext()
+logger = logging.getLogger("RefinedCustomers")
 
-glue_context = GlueContext(sc)
-
-spark = glue_context.spark_session
-
-job = Job(glue_context)
-
-job.init(
-    args["JOB_NAME"],
-    args
-)
-
-
-# =========================================================
-# Read Customers from Glue Catalog
-# =========================================================
-
-customers_dyf = (
-    glue_context
-    .create_dynamic_frame
-    .from_catalog(
-        database="ecommerce_data_platform",
-        table_name="customers"
-    )
-)
-
-customers_df = customers_dyf.toDF()
-
-
-# =========================================================
-# Raw Customers
-# =========================================================
-
-print("\n--- Raw Customers ---")
-
-customers_df.printSchema()
-
-print(
-    f"Raw customer count: "
-    f"{customers_df.count()}"
-)
-
-customers_df.show(
-    5,
-    truncate=False
-)
-
-
-# =========================================================
-# Convert Signup Date
-# =========================================================
-
-customers_df = customers_df.withColumn(
-    "signup_date",
-    to_date(
-        col("signup_date"),
-        "dd-MM-yyyy"
-    )
-)
-
-
-# =========================================================
-# Standardize Customer Fields
-# =========================================================
-
-customers_df = (
-    customers_df
-    .withColumn(
-        "name",
-        trim(col("name"))
-    )
-    .withColumn(
-        "email",
-        lower(trim(col("email")))
-    )
-    .withColumn(
-        "city",
-        trim(col("city"))
-    )
-    .withColumn(
-        "state",
-        trim(col("state"))
-    )
-    .withColumn(
-        "country",
-        trim(col("country"))
-    )
-)
-
-
-print("\n--- Standardized Customers ---")
-
-customers_df.show(
-    5,
-    truncate=False
-)
-
-
-# =========================================================
-# Customer Date Transformations
-# =========================================================
-
-customers_df = (
-    customers_df
-    .withColumn(
-        "signup_year",
-        year(col("signup_date"))
-    )
-    .withColumn(
-        "signup_month",
-        month(col("signup_date"))
-    )
-    .withColumn(
-        "signup_day",
-        dayofmonth(col("signup_date"))
-    )
-)
-
-
-print("\n--- Customer Date Transformations ---")
-
-customers_df.show(
-    5,
-    truncate=False
-)
-
-
-# =========================================================
-# Customer Tenure
-# =========================================================
-
-customers_df = customers_df.withColumn(
-    "customer_tenure_days",
-    datediff(
-        current_date(),
-        col("signup_date")
-    )
-)
-
-
-print("\n--- Customer Tenure ---")
-
-customers_df.select(
+REQUIRED_COLUMNS = [
     "customer_id",
+    "name",
+    "email",
     "signup_date",
-    "customer_tenure_days"
-).show(
-    5,
-    truncate=False
-)
+    "city",
+    "state",
+    "country",
+]
 
 
-# =========================================================
-# Customer Status
-# =========================================================
+def validate_columns(df: DataFrame) -> None:
+    """Fail clearly when required source columns are missing."""
+    missing = sorted(set(REQUIRED_COLUMNS) - set(df.columns))
 
-customers_df = customers_df.withColumn(
-    "customer_status",
-    when(
-        col("customer_tenure_days") < 90,
-        "NEW"
+    if missing:
+        raise ValueError(
+            f"Customers table is missing required columns: {missing}"
+        )
+
+
+def run_transformation(glue_context) -> dict:
+    """
+    Transform raw customers and write refined Parquet data.
+
+    The caller supplies the existing GlueContext.
+    Returns basic execution metadata for orchestration.
+    """
+
+    logger.info("Starting customers refined transformation")
+
+    # 1. Read raw customers from Glue Catalog.
+    source_dyf = glue_context.create_dynamic_frame.from_catalog(
+        database=DATABASE,
+        table_name=TABLE,
     )
-    .when(
-        col("customer_tenure_days") <= 365,
-        "ACTIVE"
+    customers_df = source_dyf.toDF()
+
+    validate_columns(customers_df)
+
+    source_count = customers_df.count()
+    logger.info("Raw customer rows: %s", source_count)
+
+    # 2. Standardize text fields.
+    customers_df = (
+        customers_df
+        .withColumn("customer_id", trim(col("customer_id").cast("string")))
+        .withColumn("name", trim(col("name")))
+        .withColumn("email", lower(trim(col("email"))))
+        .withColumn("city", trim(col("city")))
+        .withColumn("state", trim(col("state")))
+        .withColumn("country", trim(col("country")))
     )
-    .otherwise(
-        "ESTABLISHED"
+
+    # Convert supported signup-date formats.
+    # Supports the format in the original transformation and ISO dates.
+    raw_signup_date = trim(col("signup_date").cast("string"))
+
+    customers_df = customers_df.withColumn(
+        "signup_date",
+        when(
+            raw_signup_date.rlike(r"^\d{2}-\d{2}-\d{4}$"),
+            to_date(raw_signup_date, "dd-MM-yyyy"),
+        ).otherwise(to_date(raw_signup_date)),
     )
-)
 
-
-print("\n--- Customer Status ---")
-
-customers_df.select(
-    "customer_id",
-    "customer_tenure_days",
-    "customer_status"
-).show(
-    10,
-    truncate=False
-)
-
-
-# =========================================================
-# Transformed Customer Verification
-# =========================================================
-
-print(
-    "\n--- Transformed Customer Verification ---"
-)
-
-print(
-    f"Transformed customer count: "
-    f"{customers_df.count()}"
-)
-
-
-print("\nCustomer Status Distribution:")
-
-customers_df.groupBy(
-    "customer_status"
-).count().show()
-
-
-print("\nFinal Customer Schema:")
-
-customers_df.printSchema()
-
-
-# =========================================================
-# Write Curated Customers
-# =========================================================
-
-curated_customers_path = (
-    "s3://ecommerce-data-platform-version1/"
-    "curated/customers/"
-)
-
-
-(
-    customers_df
-    .write
-    .mode("overwrite")
-    .parquet(
-        curated_customers_path
+    # 3. Flag incomplete or invalid records.
+    customers_df = customers_df.withColumn(
+        "customer_data_quality_status",
+        when(
+            col("customer_id").isNull()
+            | (col("customer_id") == "")
+            | col("name").isNull()
+            | (col("name") == "")
+            | col("email").isNull()
+            | (col("email") == "")
+            | col("signup_date").isNull(),
+            "REVIEW",
+        )
+        .when(col("signup_date") > current_date(), "REVIEW")
+        .otherwise("VALID"),
     )
-)
 
-print(
-    "Curated customers written successfully."
-)
+    # 4. Derive signup date dimensions.
+    customers_df = (
+        customers_df
+        .withColumn("signup_year", year(col("signup_date")))
+        .withColumn("signup_month", month(col("signup_date")))
+        .withColumn("signup_day", dayofmonth(col("signup_date")))
+        .withColumn(
+            "customer_tenure_days",
+            when(
+                col("signup_date").isNotNull()
+                & (col("signup_date") <= current_date()),
+                datediff(current_date(), col("signup_date")),
+            ),
+        )
+    )
 
+    # 5. Derive customer status.
+    customers_df = customers_df.withColumn(
+        "customer_status",
+        when(col("customer_tenure_days").isNull(), "UNKNOWN")
+        .when(col("customer_tenure_days") < 90, "NEW")
+        .when(col("customer_tenure_days") <= 365, "ACTIVE")
+        .otherwise("ESTABLISHED"),
+    )
 
-# =========================================================
-# Curated Customer Verification
-# =========================================================
+    # 6. Check duplicate customer IDs.
+    # Do not arbitrarily drop duplicates: without a reliable update timestamp,
+    # choosing which record to keep could discard legitimate information.
+    duplicate_ids = (
+        customers_df
+        .filter(col("customer_id").isNotNull() & (col("customer_id") != ""))
+        .groupBy("customer_id")
+        .agg(count("*").alias("record_count"))
+        .filter(col("record_count") > 1)
+    )
 
-curated_customers_df = spark.read.parquet(
-    curated_customers_path
-)
+    duplicate_id_count = duplicate_ids.count()
 
+    if duplicate_id_count:
+        logger.warning(
+            "Found %s customer IDs with duplicate records; "
+            "records are retained for review.",
+            duplicate_id_count,
+        )
 
-print(
-    "\n--- Curated Customers Verification ---"
-)
+        customers_df = customers_df.withColumn(
+            "customer_data_quality_status",
+            when(
+                col("customer_id").isin(
+                    [row["customer_id"] for row in duplicate_ids.select(
+                        "customer_id"
+                    ).limit(1000).collect()]
+                ),
+                "REVIEW",
+            ).otherwise(col("customer_data_quality_status")),
+        )
 
-print(
-    f"Curated customer count: "
-    f"{curated_customers_df.count()}"
-)
+    # 7. Log quality counts.
+    customers_df.groupBy(
+        "customer_data_quality_status"
+    ).count().show()
 
-curated_customers_df.printSchema()
+    # 8. Write refined Parquet data.
+    (
+        customers_df.write
+        .mode("overwrite")
+        .parquet(OUTPUT_PATH)
+    )
 
-curated_customers_df.show(
-    5,
-    truncate=False
-)
+    logger.info("Refined customers written to %s", OUTPUT_PATH)
 
+    # 9. Verify output.
+    refined_df = glue_context.spark_session.read.parquet(OUTPUT_PATH)
+    output_count = refined_df.count()
 
-# =========================================================
-# Commit Glue Job
-# =========================================================
+    if output_count != source_count:
+        logger.warning(
+            "Customer row count changed: source=%s, refined=%s",
+            source_count,
+            output_count,
+        )
 
-job.commit()
+    logger.info(
+        "Customers transformation completed: %s rows",
+        output_count,
+    )
+
+    return {
+        "dataset": "customers",
+        "source_count": source_count,
+        "output_count": output_count,
+        "output_path": OUTPUT_PATH,
+        "status": "SUCCESS",
+    }

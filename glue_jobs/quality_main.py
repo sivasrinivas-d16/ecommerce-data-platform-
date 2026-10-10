@@ -11,6 +11,10 @@ from quality_orders import run_quality as run_orders_quality
 from quality_payments import run_quality as run_payments_quality
 from quality_events import run_quality as run_events_quality
 
+from pyspark.sql.types import (
+    StructType, StructField, StringType,
+    DoubleType, LongType, ArrayType
+)
 
 # ============================================================
 # CONFIGURATION
@@ -215,11 +219,58 @@ def run_all_quality_checks(spark):
 # COMBINED SUMMARY
 # ============================================================
 
+
 def build_summary(reports):
+    """
+    Build a combined summary while preserving failed metric names
+    and explicitly identified failed columns.
+
+    A column is counted only when a failed metric contains a
+    recognized column-name field.
+    """
     summary = []
+
+    column_keys = (
+        "column_name",
+        "column",
+        "field_name",
+        "columnName",
+    )
 
     for dataset in DATASETS:
         report = reports.get(dataset, {})
+        metrics = report.get("metrics", []) or []
+
+        failed_columns = set()
+        failed_metric_names = []
+
+        for metric in metrics:
+            if not isinstance(metric, dict):
+                continue
+
+            try:
+                failed_records = int(
+                    metric.get("failed_records", 0) or 0
+                )
+            except (TypeError, ValueError):
+                failed_records = 0
+
+            if failed_records <= 0:
+                continue
+
+            metric_name = metric.get(
+                "metric_name",
+                metric.get("name", "Unknown metric"),
+            )
+            failed_metric_names.append(str(metric_name))
+
+            # Only use explicit column-name fields.
+            for key in column_keys:
+                value = metric.get(key)
+
+                if isinstance(value, str) and value.strip():
+                    failed_columns.add(value.strip())
+                    break
 
         summary.append({
             "dataset": dataset,
@@ -233,6 +284,9 @@ def build_summary(reports):
                 report.get("total_records", 0)
             ),
             "error": report.get("error"),
+            "failed_columns": sorted(failed_columns),
+            "failed_column_count": len(failed_columns),
+            "failed_metrics": sorted(set(failed_metric_names)),
         })
 
     return summary
@@ -258,11 +312,36 @@ def save_summary(spark, summary):
         for item in summary
     ]
 
-    summary_df = spark.createDataFrame(summary_records)
+    summary_schema = StructType([
+    StructField("dataset", StringType(), False),
+    StructField("overall_status", StringType(), False),
+    StructField("overall_quality_score", DoubleType(), False),
+    StructField("total_records", LongType(), False),
+    StructField("error", StringType(), True),
+    StructField(
+        "failed_columns",
+        ArrayType(StringType(), containsNull=False),
+        False,
+    ),
+    StructField(
+        "failed_column_count", LongType(), False
+    ),
+    StructField(
+        "failed_metrics",
+        ArrayType(StringType(), containsNull=False),
+        False,
+    ),
+    StructField("run_timestamp", StringType(), False),
+])
+
+    summary_df = spark.createDataFrame(
+            summary_records,
+            schema=summary_schema,
+        )
 
     summary_df.write.mode("overwrite").parquet(
-        summary_path
-    )
+                summary_path
+            )
 
     json_path = f"{QUALITY_BASE}/quality_summary_json/"
 
@@ -281,7 +360,6 @@ def save_summary(spark, summary):
 # QUALITY GATE
 # ============================================================
 
-d
 MAX_ALLOWED_FAILED_RECORDS_PER_METRIC = 3
 
 
