@@ -197,7 +197,7 @@ jobs:
               ],
           )
           PY
-    
+       
       # =====================================================
       # 8. UPLOAD GLUE SCRIPTS
       # =====================================================
@@ -209,21 +209,30 @@ jobs:
 
           aws s3 cp \
             glue_jobs/generate_source_data.py \
-            "s3://${S3_BUCKET}/scripts/generate_source_data.py"
+            "s3://${S3_BUCKET}/scripts/generate_source_data.py" \
+            --region "${AWS_REGION}"
 
           aws s3 cp \
             glue_jobs/raw_layer_main.py \
-            "s3://${S3_BUCKET}/scripts/raw/raw_layer_main.py"
+            "s3://${S3_BUCKET}/scripts/raw/raw_layer_main.py" \
+            --region "${AWS_REGION}"
 
           aws s3 cp \
             build/raw_modules.zip \
-            "s3://${S3_BUCKET}/scripts/raw/raw_modules.zip"
+            "s3://${S3_BUCKET}/scripts/raw/raw_modules.zip" \
+            --region "${AWS_REGION}"
 
           aws s3 cp \
             build/validation_modules.zip \
-            "s3://${S3_BUCKET}/scripts/validation_modules.zip"
+            "s3://${S3_BUCKET}/scripts/validation_modules.zip" \
+            --region "${AWS_REGION}"
 
-          echo "Glue scripts and module ZIPs uploaded."
+          aws s3 cp \
+            src/validation/validation_main.py \
+            "s3://${S3_BUCKET}/code/src/validation/validation_main.py" \
+            --region "${AWS_REGION}"
+
+          echo "Glue scripts and module ZIPs uploaded successfully."
 
       # =====================================================
       # 9. UPLOAD SOURCE CODE
