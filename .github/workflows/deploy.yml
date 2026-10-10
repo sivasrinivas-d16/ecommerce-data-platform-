@@ -20,7 +20,7 @@ env:
 
 jobs:
   deploy:
-    name: Deploy and Run Pipeline
+    name: Upload Data, Deploy and Run Pipeline
     runs-on: ubuntu-latest
 
     steps:
@@ -39,6 +39,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install deployment dependencies
+        shell: bash
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
@@ -58,12 +59,72 @@ jobs:
       # 4. VERIFY AWS IDENTITY
       # =====================================================
       - name: Verify AWS identity
+        shell: bash
         run: |
           set -euo pipefail
           aws sts get-caller-identity
 
       # =====================================================
-      # 5. VALIDATE REQUIRED FILES
+      # 5. VALIDATE LOCAL DATASET DIRECTORY
+      # =====================================================
+      - name: Validate source datasets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! -d "data_s3" ]]; then
+            echo "ERROR: data_s3 directory is missing."
+            exit 1
+          fi
+
+          required_data=(
+            "data_s3/customers.csv"
+            "data_s3/products.csv"
+            "data_s3/orders.csv"
+            "data_s3/payments.csv"
+            "data_s3/events.csv"
+          )
+
+          for file in "${required_data[@]}"; do
+            if [[ ! -f "$file" ]]; then
+              echo "ERROR: Required dataset missing: $file"
+              exit 1
+            fi
+          done
+
+          echo "All five source datasets are available."
+
+      # =====================================================
+      # 6. UPLOAD SOURCE DATASETS TO S3
+      # =====================================================
+      - name: Upload source datasets to S3
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Uploading CSV datasets to S3..."
+
+          aws s3 sync data_s3/ \
+            "s3://${S3_BUCKET}/data_s3/" \
+            --exclude "*" \
+            --include "*.csv"
+
+          echo "Verifying uploaded objects..."
+
+          for file in customers.csv products.csv orders.csv payments.csv events.csv; do
+            aws s3api head-object \
+              --bucket "${S3_BUCKET}" \
+              --key "data_s3/${file}" \
+              --query '{ContentLength:ContentLength,LastModified:LastModified}' \
+              --output json
+
+            echo "Verified: ${file}"
+          done
+
+          echo "All source datasets uploaded and verified."
+
+      # =====================================================
+      # 7. VALIDATE REQUIRED DEPLOYMENT FILES
       # =====================================================
       - name: Validate deployment files
         shell: bash
@@ -92,7 +153,7 @@ jobs:
           echo "All required deployment files exist."
 
       # =====================================================
-      # 6. PACKAGE RAW-LAYER MODULES
+      # 8. PACKAGE RAW-LAYER MODULES
       # =====================================================
       - name: Package raw-layer modules
         shell: bash
@@ -119,9 +180,7 @@ jobs:
           for module in modules:
               path = source / module
               if not path.is_file():
-                  raise FileNotFoundError(
-                      f"Required module not found: {path}"
-                  )
+                  raise FileNotFoundError(f"Missing module: {path}")
 
           with ZipFile(destination, "w", ZIP_DEFLATED) as archive:
               for module in modules:
@@ -133,24 +192,19 @@ jobs:
               for name in names:
                   print(f" - {name}")
 
-              if set(names) != set(modules):
-                  raise RuntimeError(
-                      "ZIP contents do not match the required modules."
-                  )
+              if set(names) != set(modules) or len(names) != len(modules):
+                  raise RuntimeError("Unexpected raw-layer ZIP contents.")
 
           print(f"Created {destination}")
           PY
 
       # =====================================================
-      # 7. UPLOAD RAW-LAYER SCRIPTS
+      # 9. UPLOAD RAW-LAYER GLUE SCRIPT AND MODULES
       # =====================================================
       - name: Upload raw-layer scripts
         shell: bash
         run: |
           set -euo pipefail
-
-          # S3 creates these object prefixes automatically.
-          # Existing objects are updated by these uploads.
 
           aws s3 cp \
             glue_jobs/raw_layer_main.py \
@@ -161,7 +215,7 @@ jobs:
             "s3://${S3_BUCKET}/scripts/raw/raw_modules.zip"
 
       # =====================================================
-      # 8. UPLOAD SOURCE CODE
+      # 10. UPLOAD SOURCE CODE
       # =====================================================
       - name: Upload source code
         shell: bash
@@ -172,14 +226,14 @@ jobs:
             "s3://${S3_BUCKET}/code/src/"
 
       # =====================================================
-      # 9. UPLOAD SCHEMAS
+      # 11. UPLOAD SCHEMAS
       # =====================================================
       - name: Upload schemas
         shell: bash
         run: |
           set -euo pipefail
 
-          if [[ -d schemas ]]; then
+          if [[ -d "schemas" ]]; then
             aws s3 sync schemas/ \
               "s3://${S3_BUCKET}/code/schemas/"
           else
@@ -187,14 +241,14 @@ jobs:
           fi
 
       # =====================================================
-      # 10. UPLOAD DOCUMENTATION
+      # 12. UPLOAD DOCUMENTATION
       # =====================================================
       - name: Upload documentation
         shell: bash
         run: |
           set -euo pipefail
 
-          if [[ -d docs ]]; then
+          if [[ -d "docs" ]]; then
             aws s3 sync docs/ \
               "s3://${S3_BUCKET}/code/docs/"
           else
@@ -202,7 +256,7 @@ jobs:
           fi
 
       # =====================================================
-      # 11. VERIFY RAW-LAYER S3 OBJECTS
+      # 13. VERIFY RAW-LAYER S3 OBJECTS
       # =====================================================
       - name: Verify raw-layer S3 objects
         shell: bash
@@ -220,7 +274,7 @@ jobs:
           echo "Raw-layer script and module ZIP verified."
 
       # =====================================================
-      # 12. REGISTER GLUE CATALOG TABLES
+      # 14. REGISTER GLUE CATALOG TABLES
       # =====================================================
       - name: Register Glue Catalog tables
         shell: bash
@@ -229,7 +283,7 @@ jobs:
           python src/utils/register_glue_tables.py
 
       # =====================================================
-      # 13. PROVISION / UPDATE GLUE JOBS
+      # 15. PROVISION / UPDATE GLUE JOBS
       # =====================================================
       - name: Provision Glue jobs
         shell: bash
@@ -238,7 +292,7 @@ jobs:
           python src/utils/provision_glue_jobs.py
 
       # =====================================================
-      # 14. VERIFY RAW-LAYER GLUE JOB
+      # 16. VERIFY RAW-LAYER GLUE JOB
       # =====================================================
       - name: Verify raw-layer Glue job
         shell: bash
@@ -248,11 +302,11 @@ jobs:
           aws glue get-job \
             --job-name ecommerce_raw_layer \
             --region "${AWS_REGION}" \
-            --query 'Job.{Name:Name,Script:Command.ScriptLocation,Version:GlueVersion,Arguments:DefaultArguments}' \
+            --query 'Job.{Name:Name,Role:Role,Script:Command.ScriptLocation,Version:GlueVersion,Arguments:DefaultArguments}' \
             --output json
 
       # =====================================================
-      # 15. DEPLOY / UPDATE STEP FUNCTIONS
+      # 17. DEPLOY / UPDATE STEP FUNCTIONS
       # =====================================================
       - name: Deploy Step Functions
         shell: bash
@@ -261,7 +315,7 @@ jobs:
           python src/utils/provision_step_function.py
 
       # =====================================================
-      # 16. VERIFY STATE MACHINE
+      # 18. VERIFY STATE MACHINE
       # =====================================================
       - name: Verify raw-layer state machine
         shell: bash
@@ -283,7 +337,7 @@ jobs:
           echo "STATE_MACHINE_ARN=${STATE_MACHINE_ARN}" >> "$GITHUB_ENV"
 
       # =====================================================
-      # 17. START RAW-LAYER EXECUTION
+      # 19. START RAW-LAYER EXECUTION
       # =====================================================
       - name: Start raw-layer pipeline
         shell: bash
