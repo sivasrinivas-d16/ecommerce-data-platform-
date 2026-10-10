@@ -270,7 +270,7 @@ def provision_raw_layer_job():
 
 def verify_validation_files():
     required_keys = [
-        "scripts/validation/validation_main.py",
+        "scripts/validation_main.py",
         "scripts/validation_modules.zip"
     ]
 
