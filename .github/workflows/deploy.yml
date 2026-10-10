@@ -189,11 +189,11 @@ jobs:
               "src/validation",
               "build/validation_modules.zip",
               [
-                  "validate_customers.py",
-                  "validate_products.py",
-                  "validate_orders.py",
-                  "validate_payments.py",
-                  "validate_events.py",
+                  "validation_customers.py",
+                  "validation_products.py",
+                  "validation_orders.py",
+                  "validation_payments.py",
+                  "validation_events.py",
               ],
           )
           PY
@@ -314,11 +314,11 @@ jobs:
           destination = Path("build/validation_modules.zip")
 
           modules = [
-              "validate_customers.py",
-              "validate_products.py",
-              "validate_orders.py",
-              "validate_payments.py",
-              "validate_events.py",
+              "validation_customers.py",
+              "validation_products.py",
+              "validation_orders.py",
+              "validation_payments.py",
+              "validation_events.py",
           ]
 
           for module in modules:
