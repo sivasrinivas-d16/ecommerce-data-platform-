@@ -348,55 +348,32 @@ jobs:
           echo "Started execution: ${EXECUTION_ARN}"
 
       # =====================================================
-      # 18. WAIT FOR PIPELINE COMPLETION
+      # 18. VERIFY PIPELINE STARTED — DO NOT WAIT
       # =====================================================
 
-      - name: Wait for pipeline completion
+      - name: Verify raw-layer pipeline started
         shell: bash
         run: |
           set -euo pipefail
 
-          while true; do
-            STATUS=$(aws stepfunctions describe-execution \
-              --execution-arn "${EXECUTION_ARN}" \
-              --region "${AWS_REGION}" \
-              --query status \
-              --output text)
+          if [[ -z "${EXECUTION_ARN:-}" || "${EXECUTION_ARN}" == "None" ]]; then
+            echo "ERROR: Step Functions execution ARN was not returned."
+            exit 1
+          fi
 
-            echo "Pipeline status: ${STATUS}"
+          aws stepfunctions describe-execution \
+            --execution-arn "${EXECUTION_ARN}" \
+            --region "${AWS_REGION}" \
+            --query '{executionArn:executionArn,status:status,startDate:startDate}' \
+            --output json
 
-            case "${STATUS}" in
-              SUCCEEDED)
-                echo "Source generation and raw ingestion succeeded."
-                break
-                ;;
-              FAILED|TIMED_OUT|ABORTED)
-                aws stepfunctions describe-execution \
-                  --execution-arn "${EXECUTION_ARN}" \
-                  --region "${AWS_REGION}" \
-                  --output json
-                echo "Pipeline execution ended with status: ${STATUS}"
-                exit 1
-                ;;
-              RUNNING|PENDING)
-                sleep 30
-                ;;
-              *)
-                echo "Unexpected execution status: ${STATUS}"
-                exit 1
-                ;;
-            esac
-          done
+          echo "Step Functions execution was started successfully."
+          echo "Execution ARN: ${EXECUTION_ARN}"
+          echo "The workflow will not wait for pipeline completion."
 
       # =====================================================
-      # 19. REGISTER / UPDATE GLUE CATALOG TABLES
+      # 19. CATALOG REGISTRATION
       # =====================================================
-
-      - name: Register Glue Catalog tables
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          python src/utils/register_glue_tables.py
-
-          echo "Glue Catalog registration completed."
+      # Run register_glue_tables.py separately after the
+      # raw-layer pipeline completes successfully.
+      # Do not register tables immediately after starting it.
