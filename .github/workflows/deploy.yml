@@ -63,26 +63,27 @@ jobs:
           aws sts get-caller-identity
 
       # =====================================================
-      # 5. CHECK REQUIRED FILES
+      # 5. VALIDATE REQUIRED FILES
       # =====================================================
       - name: Validate deployment files
+        shell: bash
         run: |
           set -euo pipefail
 
           required_files=(
             "glue_jobs/raw_layer_main.py"
-            "ingestion/ingest_customers.py"
-            "ingestion/ingest_products.py"
-            "ingestion/ingest_orders.py"
-            "ingestion/ingest_payments.py"
-            "ingestion/ingest_events.py"
+            "src/ingestion/ingest_customers.py"
+            "src/ingestion/ingest_products.py"
+            "src/ingestion/ingest_orders.py"
+            "src/ingestion/ingest_payments.py"
+            "src/ingestion/ingest_events.py"
             "src/utils/register_glue_tables.py"
             "src/utils/provision_glue_jobs.py"
             "src/utils/provision_step_function.py"
           )
 
           for file in "${required_files[@]}"; do
-            if [ ! -f "$file" ]; then
+            if [[ ! -f "$file" ]]; then
               echo "ERROR: Required file missing: $file"
               exit 1
             fi
@@ -91,13 +92,13 @@ jobs:
           echo "All required deployment files exist."
 
       # =====================================================
-      # PACKAGE RAW-LAYER MODULES
+      # 6. PACKAGE RAW-LAYER MODULES
       # =====================================================
       - name: Package raw-layer modules
+        shell: bash
         run: |
           set -euo pipefail
 
-          SOURCE_DIR="src/ingestion"
           mkdir -p build
 
           python - <<'PY'
@@ -116,9 +117,10 @@ jobs:
           ]
 
           for module in modules:
-              if not (source / module).is_file():
+              path = source / module
+              if not path.is_file():
                   raise FileNotFoundError(
-                      f"Required module not found: {source / module}"
+                      f"Required module not found: {path}"
                   )
 
           with ZipFile(destination, "w", ZIP_DEFLATED) as archive:
@@ -126,19 +128,29 @@ jobs:
                   archive.write(source / module, arcname=module)
 
           with ZipFile(destination) as archive:
-              print("Packaged modules:")
-              for name in archive.namelist():
-                  print(name)
+              names = archive.namelist()
+              print("ZIP contents:")
+              for name in names:
+                  print(f" - {name}")
+
+              if set(names) != set(modules):
+                  raise RuntimeError(
+                      "ZIP contents do not match the required modules."
+                  )
+
+          print(f"Created {destination}")
           PY
+
       # =====================================================
       # 7. UPLOAD RAW-LAYER SCRIPTS
       # =====================================================
       - name: Upload raw-layer scripts
+        shell: bash
         run: |
           set -euo pipefail
 
-          # S3 does not require folders to be created manually.
-          # These uploads create or replace the required objects.
+          # S3 creates these object prefixes automatically.
+          # Existing objects are updated by these uploads.
 
           aws s3 cp \
             glue_jobs/raw_layer_main.py \
@@ -152,6 +164,7 @@ jobs:
       # 8. UPLOAD SOURCE CODE
       # =====================================================
       - name: Upload source code
+        shell: bash
         run: |
           set -euo pipefail
 
@@ -162,34 +175,37 @@ jobs:
       # 9. UPLOAD SCHEMAS
       # =====================================================
       - name: Upload schemas
+        shell: bash
         run: |
           set -euo pipefail
 
-          if [ -d schemas ]; then
+          if [[ -d schemas ]]; then
             aws s3 sync schemas/ \
               "s3://${S3_BUCKET}/code/schemas/"
           else
-            echo "No schemas directory found; skipping."
+            echo "Schemas directory not found; skipping."
           fi
 
       # =====================================================
       # 10. UPLOAD DOCUMENTATION
       # =====================================================
       - name: Upload documentation
+        shell: bash
         run: |
           set -euo pipefail
 
-          if [ -d docs ]; then
+          if [[ -d docs ]]; then
             aws s3 sync docs/ \
               "s3://${S3_BUCKET}/code/docs/"
           else
-            echo "No docs directory found; skipping."
+            echo "Docs directory not found; skipping."
           fi
 
       # =====================================================
-      # 11. VERIFY REQUIRED S3 OBJECTS
+      # 11. VERIFY RAW-LAYER S3 OBJECTS
       # =====================================================
-      - name: Verify S3 deployment artifacts
+      - name: Verify raw-layer S3 objects
+        shell: bash
         run: |
           set -euo pipefail
 
@@ -201,15 +217,13 @@ jobs:
             --bucket "${S3_BUCKET}" \
             --key scripts/raw/raw_modules.zip
 
-          aws s3 ls "s3://${S3_BUCKET}/code/src/"
-          aws s3 ls "s3://${S3_BUCKET}/code/schemas/" || true
-
-          echo "Required raw-layer S3 objects are present."
+          echo "Raw-layer script and module ZIP verified."
 
       # =====================================================
       # 12. REGISTER GLUE CATALOG TABLES
       # =====================================================
       - name: Register Glue Catalog tables
+        shell: bash
         run: |
           set -euo pipefail
           python src/utils/register_glue_tables.py
@@ -218,6 +232,7 @@ jobs:
       # 13. PROVISION / UPDATE GLUE JOBS
       # =====================================================
       - name: Provision Glue jobs
+        shell: bash
         run: |
           set -euo pipefail
           python src/utils/provision_glue_jobs.py
@@ -226,19 +241,21 @@ jobs:
       # 14. VERIFY RAW-LAYER GLUE JOB
       # =====================================================
       - name: Verify raw-layer Glue job
+        shell: bash
         run: |
           set -euo pipefail
 
           aws glue get-job \
             --job-name ecommerce_raw_layer \
             --region "${AWS_REGION}" \
-            --query 'Job.{Name:Name,Script:Command.ScriptLocation,Version:GlueVersion}' \
+            --query 'Job.{Name:Name,Script:Command.ScriptLocation,Version:GlueVersion,Arguments:DefaultArguments}' \
             --output json
 
       # =====================================================
       # 15. DEPLOY / UPDATE STEP FUNCTIONS
       # =====================================================
       - name: Deploy Step Functions
+        shell: bash
         run: |
           set -euo pipefail
           python src/utils/provision_step_function.py
@@ -247,10 +264,15 @@ jobs:
       # 16. VERIFY STATE MACHINE
       # =====================================================
       - name: Verify raw-layer state machine
+        shell: bash
         run: |
           set -euo pipefail
 
-          STATE_MACHINE_ARN="arn:aws:states:${AWS_REGION}:$(aws sts get-caller-identity --query Account --output text):stateMachine:${RAW_LAYER_STATE_MACHINE}"
+          ACCOUNT_ID=$(aws sts get-caller-identity \
+            --query Account \
+            --output text)
+
+          STATE_MACHINE_ARN="arn:aws:states:${AWS_REGION}:${ACCOUNT_ID}:stateMachine:${RAW_LAYER_STATE_MACHINE}"
 
           aws stepfunctions describe-state-machine \
             --state-machine-arn "${STATE_MACHINE_ARN}" \
@@ -264,6 +286,7 @@ jobs:
       # 17. START RAW-LAYER EXECUTION
       # =====================================================
       - name: Start raw-layer pipeline
+        shell: bash
         run: |
           set -euo pipefail
 
