@@ -8,8 +8,7 @@ import boto3
 AWS_REGION = "ap-southeast-2"
 
 GLUE_ROLE_ARN = (
-    "arn:aws:iam::256130491261:"
-    "role/AWSGlueServiceRole-ecommerce"
+   "arn:aws:iam::256130491261:role/service-role/AWSGlueServiceRole-ecommerce"
 )
 
 S3_BUCKET = "ecommerce-data-platform-version1"
