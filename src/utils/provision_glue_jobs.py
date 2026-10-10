@@ -68,7 +68,7 @@ RAW_LAYER_MODULES = (
 VALIDATION_MAIN_JOB = "ecommerce-validation-main"
 
 VALIDATION_MAIN_SCRIPT = (
-    f"s3://{S3_BUCKET}/scripts/validation/validation_main.py"
+    f"s3://{S3_BUCKET}/scripts/validation_main.py"
 )
 
 VALIDATION_MODULES = ",".join([
