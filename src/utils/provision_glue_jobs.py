@@ -403,11 +403,11 @@ def provision_quality_main_job():
 REFINED_MAIN_JOB = "ecommerce-refined-layer"
 
 REFINED_MAIN_SCRIPT = (
-    f"s3://{S3_BUCKET}/scripts/refined/refined_layer_main.py"
+    f"s3://{S3_BUCKET}/scripts/refined_layer_main.py"
 )
 
 REFINED_MODULES = (
-    f"s3://{S3_BUCKET}/scripts/refined/refined_modules.zip"
+    f"s3://{S3_BUCKET}/scripts/refined_modules.zip"
 )
 
 # ============================================================
