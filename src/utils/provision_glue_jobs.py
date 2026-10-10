@@ -65,23 +65,24 @@ RAW_LAYER_MODULES = (
     f"s3://{S3_BUCKET}/scripts/raw/raw_modules.zip"
 )
 
+# ============================================================
+# 6. VALIDATION MAIN GLUE JOB
+# ============================================================
 
 VALIDATION_MAIN_JOB = "ecommerce-validation-main"
 
+# Main driver remains in the existing validation folder.
 VALIDATION_MAIN_SCRIPT = (
-    f"s3://{S3_BUCKET}/scripts/validation_main.py"
+    f"s3://{S3_BUCKET}/code/src/validation/validation_main.py"
 )
 
-VALIDATION_MODULES = ",".join([
-    f"s3://{S3_BUCKET}/code/src/validation/validate_customers.py",
-    f"s3://{S3_BUCKET}/code/src/validation/validate_products.py",
-    f"s3://{S3_BUCKET}/code/src/validation/validate_orders.py",
-    f"s3://{S3_BUCKET}/code/src/validation/validate_payments.py",
-    f"s3://{S3_BUCKET}/code/src/validation/validate_events.py",
-])
+# All five validation modules are packaged into one ZIP.
+VALIDATION_MODULES = (
+    f"s3://{S3_BUCKET}/scripts/validation_modules.zip"
+)
 
 # ============================================================
-# 6. GLUE CLIENT
+# 7. AWS CLIENTS
 # ============================================================
 
 glue_client = boto3.client(
@@ -89,8 +90,13 @@ glue_client = boto3.client(
     region_name=AWS_REGION
 )
 
+s3_client = boto3.client(
+    "s3",
+    region_name=AWS_REGION
+)
+
 # ============================================================
-# 7. COMMON CONFIGURATION
+# 8. COMMON CONFIGURATION
 # ============================================================
 
 def get_job_command(script_location):
@@ -155,7 +161,7 @@ def create_or_update_job(
 
 
 # ============================================================
-# 8. SOURCE DATA GENERATION
+# 9. SOURCE DATA GENERATION
 # ============================================================
 
 def provision_source_generation_job():
@@ -169,7 +175,7 @@ def provision_source_generation_job():
 
 
 # ============================================================
-# 9. CUSTOMERS ETL
+# 10. CUSTOMERS ETL
 # ============================================================
 
 def provision_customers_etl_job():
@@ -180,7 +186,7 @@ def provision_customers_etl_job():
 
 
 # ============================================================
-# 10. CUSTOMERS VALIDATION + QUALITY
+# 11. CUSTOMERS VALIDATION + QUALITY
 # ============================================================
 
 def provision_customers_validation_quality_job():
@@ -191,7 +197,7 @@ def provision_customers_validation_quality_job():
 
 
 # ============================================================
-# 11. CUSTOMERS TRANSFORMATION
+# 12. CUSTOMERS TRANSFORMATION
 # ============================================================
 
 def provision_customers_transformation_job():
@@ -202,7 +208,7 @@ def provision_customers_transformation_job():
 
 
 # ============================================================
-# 12. PRODUCTS ETL
+# 13. PRODUCTS ETL
 # ============================================================
 
 def provision_products_etl_job():
@@ -213,7 +219,7 @@ def provision_products_etl_job():
 
 
 # ============================================================
-# 13. COMBINED RAW-LAYER JOB
+# 14. COMBINED RAW-LAYER JOB
 # ============================================================
 
 def provision_raw_layer_job():
@@ -257,15 +263,51 @@ def provision_raw_layer_job():
         timeout=180
     )
 
+
 # ============================================================
-# VALIDATION MAIN GLUE JOB
+# 15. VERIFY VALIDATION FILES IN S3
+# ============================================================
+
+def verify_validation_files():
+    required_keys = [
+        "code/src/validation/validation_main.py",
+        "scripts/validation_modules.zip"
+    ]
+
+    for key in required_keys:
+        try:
+            s3_client.head_object(
+                Bucket=S3_BUCKET,
+                Key=key
+            )
+            print(f"S3 file verified: s3://{S3_BUCKET}/{key}")
+
+        except ClientError as error:
+            error_code = error.response.get(
+                "Error", {}
+            ).get("Code", "")
+
+            if error_code in ("404", "NoSuchKey", "NotFound"):
+                raise FileNotFoundError(
+                    f"Required S3 file is missing: "
+                    f"s3://{S3_BUCKET}/{key}"
+                ) from error
+
+            raise
+
+
+# ============================================================
+# 16. VALIDATION MAIN GLUE JOB
 # ============================================================
 
 def provision_validation_main_job():
+    print("Checking validation script and ZIP in S3...")
+
+    verify_validation_files()
 
     validation_arguments = {
         "--S3_BUCKET": S3_BUCKET,
-        "--extra-py-files": VALIDATION_MODULES,
+        "--extra-py-files": VALIDATION_MODULES
     }
 
     create_or_update_job(
@@ -274,13 +316,12 @@ def provision_validation_main_job():
         extra_arguments=validation_arguments,
         worker_type="G.1X",
         number_of_workers=5,
-        timeout=180,
+        timeout=180
     )
 
 
-
 # ============================================================
-# MAIN
+# 17. MAIN
 # ============================================================
 
 def main():
