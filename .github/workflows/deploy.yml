@@ -91,19 +91,20 @@ jobs:
           echo "All required deployment files exist."
 
       # =====================================================
-      # 6. PACKAGE RAW-LAYER MODULES
+      # PACKAGE RAW-LAYER MODULES
       # =====================================================
       - name: Package raw-layer modules
         run: |
           set -euo pipefail
 
+          SOURCE_DIR="src/ingestion"
           mkdir -p build
 
           python - <<'PY'
           from pathlib import Path
           from zipfile import ZipFile, ZIP_DEFLATED
 
-          source = Path("ingestion")
+          source = Path("src/ingestion")
           destination = Path("build/raw_modules.zip")
 
           modules = [
@@ -114,21 +115,21 @@ jobs:
               "ingest_events.py",
           ]
 
+          for module in modules:
+              if not (source / module).is_file():
+                  raise FileNotFoundError(
+                      f"Required module not found: {source / module}"
+                  )
+
           with ZipFile(destination, "w", ZIP_DEFLATED) as archive:
               for module in modules:
                   archive.write(source / module, arcname=module)
 
           with ZipFile(destination) as archive:
-              names = archive.namelist()
-              print("Packaged modules:", names)
-
-              missing = set(modules) - set(names)
-              if missing:
-                  raise SystemExit(
-                      f"ZIP is missing required modules: {sorted(missing)}"
-                  )
+              print("Packaged modules:")
+              for name in archive.namelist():
+                  print(name)
           PY
-
       # =====================================================
       # 7. UPLOAD RAW-LAYER SCRIPTS
       # =====================================================
