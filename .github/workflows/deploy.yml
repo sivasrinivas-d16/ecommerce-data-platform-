@@ -98,6 +98,17 @@ jobs:
             "src/quality/quality_orders.py"
             "src/quality/quality_payments.py"
             "src/quality/quality_events.py"
+            "glue_jobs/refined_layer_main.py"
+            "glue_jobs/transform_customers.py"
+            "glue_jobs/transform_products.py"
+            "glue_jobs/transform_orders.py"
+            "glue_jobs/transform_payments.py"
+            "glue_jobs/transform_events.py"
+            "src/quality/quality_customers.py"
+            "src/quality/quality_products.py"
+            "src/quality/quality_orders.py"
+            "src/quality/quality_payments.py"
+            "src/quality/quality_events.py"
           )
 
           for file in "${required_files[@]}"; do
@@ -135,7 +146,12 @@ jobs:
             src/quality/quality_orders.py \
             src/quality/quality_payments.py \
             src/quality/quality_events.py \
-
+            glue_jobs/refined_layer_main.py \
+            src/transform/transform_customers.py \
+            src/transform/transform_products.py \
+            src/transform/transform_orders.py \
+            src/transform/transform_payments.py \
+            src/transform/transform_events.py \
           echo "Python syntax checks passed."
 
       
@@ -220,6 +236,18 @@ jobs:
                   "quality_events.py",
               ],
           )
+               # Refined modules at ZIP root for direct AWS Glue imports.
+          create_zip(
+              "glue_jobs",
+              "build/refined_modules.zip",
+              [
+                  "transform_customers.py",
+                  "transform_products.py",
+                  "transform_orders.py",
+                  "transform_payments.py",
+                  "transform_events.py",
+              ],
+          )
           PY
        
       # =====================================================
@@ -264,7 +292,14 @@ jobs:
             build/quality_modules.zip \
             "s3://${S3_BUCKET}/scripts/quality_modules.zip" \
             --region "${AWS_REGION}"
-
+           aws s3 cp \
+            glue_jobs/refined_layer_main.py \
+            "s3://${S3_BUCKET}/scripts/refined_layer_main.py" \
+            --region "${AWS_REGION}"
+          aws s3 cp \
+            build/refined_modules.zip \
+            "s3://${S3_BUCKET}/scripts/refined_modules.zip" \
+            --region "${AWS_REGION}"
           echo "Glue scripts and module ZIPs uploaded successfully."
 
       # =====================================================
