@@ -264,27 +264,104 @@ jobs:
           echo "Glue Catalog tables created/updated and verified."
           
       # =====================================================
-      # 11. VERIFY SCRIPT OBJECTS
+      # 11. PACKAGE, UPLOAD AND VERIFY VALIDATION SCRIPTS
       # =====================================================
 
-      - name: Verify uploaded scripts
+      - name: Upload and verify validation scripts
         shell: bash
         run: |
           set -euo pipefail
 
-          aws s3api head-object \
-            --bucket "${S3_BUCKET}" \
-            --key scripts/generate_source_data.py
+          echo "Packaging validation modules..."
+          mkdir -p build
+
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_DEFLATED
+
+          source = Path("src/validation")
+          destination = Path("build/validation_modules.zip")
+
+          modules = [
+              "validate_customers.py",
+              "validate_products.py",
+              "validate_orders.py",
+              "validate_payments.py",
+              "validate_events.py",
+          ]
+
+          for module in modules:
+              path = source / module
+              if not path.is_file():
+                  raise FileNotFoundError(
+                      f"Validation module missing: {path}"
+                  )
+
+          with ZipFile(destination, "w", ZIP_DEFLATED) as archive:
+              for module in modules:
+                  archive.write(source / module, arcname=module)
+
+          with ZipFile(destination, "r") as archive:
+              names = archive.namelist()
+              print("Validation ZIP contents:", names)
+
+              if set(names) != set(modules) or len(names) != len(modules):
+                  raise RuntimeError(
+                      "Validation ZIP contains unexpected files."
+                  )
+
+          print(f"Created {destination}")
+          PY
+
+          echo "Uploading validation main script..."
+
+          test -f src/validation/validation_main.py
+
+          aws s3 cp \
+            src/validation/validation_main.py \
+            "s3://${S3_BUCKET}/code/src/validation/validation_main.py" \
+            --region "${AWS_REGION}"
+
+          echo "Uploading validation modules ZIP..."
+
+          aws s3 cp \
+            build/validation_modules.zip \
+            "s3://${S3_BUCKET}/scripts/validation_modules.zip" \
+            --region "${AWS_REGION}"
+
+          echo "Verifying uploaded validation objects..."
 
           aws s3api head-object \
             --bucket "${S3_BUCKET}" \
-            --key scripts/raw/raw_layer_main.py
+            --key code/src/validation/validation_main.py \
+            --region "${AWS_REGION}"
 
           aws s3api head-object \
             --bucket "${S3_BUCKET}" \
-            --key scripts/raw/raw_modules.zip
+            --key scripts/validation_modules.zip \
+            --region "${AWS_REGION}"
 
-          echo "Uploaded script objects verified."
+          echo "Validation scripts uploaded and verified successfully."
+
+          echo "Verifying existing raw-layer scripts..."
+
+          aws s3api head-object \
+            --bucket "${S3_BUCKET}" \
+            --key scripts/generate_source_data.py \
+            --region "${AWS_REGION}"
+
+          aws s3api head-object \
+            --bucket "${S3_BUCKET}" \
+            --key scripts/raw/raw_layer_main.py \
+            --region "${AWS_REGION}"
+
+          aws s3api head-object \
+            --bucket "${S3_BUCKET}" \
+            --key scripts/raw/raw_modules.zip \
+            --region "${AWS_REGION}"
+
+          echo "All required script objects verified."
+
 
       # =====================================================
       # 12. PROVISION BOTH GLUE JOBS
