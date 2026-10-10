@@ -1,315 +1,413 @@
+
+from datetime import datetime, timezone
+
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, count, when
-from datetime import datetime
+from pyspark.sql import functions as F
+from pyspark.sql.types import DateType, TimestampType
 
-spark = (
-    SparkSession.builder
-    .appName("ECommerceOrderValidation")
-    .master("local[2]")
-    .config("spark.driver.host", "127.0.0.1")
-    .config("spark.driver.bindAddress", "127.0.0.1")
-    .config("spark.hadoop.fs.permissions.umask-mode", "000")
-    .getOrCreate()
-)
 
-curated_orders_path = r".\ecommerce-data-platform\data\curated\orders"
+def validate(spark: SparkSession, bucket: str) -> dict:
+    """Strict validation of Raw Orders using AWS Glue."""
 
-orders_df = spark.read.parquet(curated_orders_path)
+    dataset = "orders"
 
-print("Curated Orders loaded successfully")
-print("Row count:", orders_df.count())
-orders_df.printSchema()
+    orders_path = f"s3://{bucket}/raw/orders/"
+    customers_path = f"s3://{bucket}/raw/customers/"
+    products_path = f"s3://{bucket}/raw/products/"
 
-required_columns = [
-    "order_id",
-    "customer_id",
-    "product_id",
-    "quantity",
-    "unit_price",
-    "order_amount",
-    "order_status",
-    "payment_status",
-    "order_timestamp"
-]
+    checks = []
 
-# ---------------------------------------------------------
-# Required Field Validation
-# ---------------------------------------------------------
+    def add_check(name, invalid_records, details=""):
+        invalid_records = int(invalid_records)
+        checks.append({
+            "validation_name": name,
+            "invalid_records": invalid_records,
+            "status": "PASS" if invalid_records == 0 else "FAIL",
+            "details": details,
+        })
 
-required_null_counts = orders_df.select(
-    *[
-        count(
-            when(col(column_name).isNull(), 1)
-        ).alias(column_name)
-        for column_name in required_columns
+    def count_invalid(df, condition):
+        return df.filter(condition).count()
+
+    def blank(column_name):
+        value = F.col(column_name)
+        return (
+            value.isNull()
+            | (F.length(F.trim(value.cast("string"))) == 0)
+        )
+
+    # --------------------------------------------------
+    # 1. Read Raw Orders
+    # --------------------------------------------------
+    orders_df = spark.read.parquet(orders_path)
+    row_count = orders_df.count()
+
+    print("Raw Orders loaded successfully")
+    print("Order count:", row_count)
+    orders_df.printSchema()
+
+    required_columns = [
+        "order_id",
+        "customer_id",
+        "product_id",
+        "quantity",
+        "unit_price",
+        "order_amount",
+        "order_status",
+        "payment_status",
+        "order_timestamp",
     ]
-).collect()[0]
 
-for column_name in required_columns:
-    null_count = required_null_counts[column_name]
-    print(f"{column_name} null count: {null_count}")
+    missing_columns = [
+        name for name in required_columns
+        if name not in orders_df.columns
+    ]
 
-# ---------------------------------------------------------
-# Duplicate Order ID Validation
-# ---------------------------------------------------------
-
-duplicate_order_count = (
-    orders_df
-    .groupBy("order_id")
-    .count()
-    .filter(col("count") > 1)
-    .count()
-)
-
-print("Duplicate order IDs:", duplicate_order_count)
-
-# ---------------------------------------------------------
-# Business Rule Validation
-# ---------------------------------------------------------
-
-business_rule_counts = orders_df.select(
-    count(
-        when(col("quantity") <= 0, 1)
-    ).alias("invalid_quantity"),
-
-    count(
-        when(col("unit_price") < 0, 1)
-    ).alias("invalid_unit_price"),
-
-    count(
-        when(col("order_amount") < 0, 1)
-    ).alias("invalid_order_amount")
-).collect()[0]
-
-invalid_quantity = business_rule_counts["invalid_quantity"]
-invalid_unit_price = business_rule_counts["invalid_unit_price"]
-invalid_order_amount = business_rule_counts["invalid_order_amount"]
-
-print("Invalid quantity:", invalid_quantity)
-print("Invalid unit price:", invalid_unit_price)
-print("Invalid order amount:", invalid_order_amount)
-
-# ---------------------------------------------------------
-# Order Amount Consistency Validation
-# ---------------------------------------------------------
-
-invalid_amount_calculations = (
-    orders_df
-    .filter(
-        col("order_amount") !=
-        (col("quantity") * col("unit_price")).cast("decimal(14,2)")
+    add_check(
+        "Required Schema",
+        len(missing_columns),
+        f"Missing columns: {missing_columns}"
+        if missing_columns else "All required columns exist",
     )
-    .count()
-)
 
-print("Invalid order amount calculations:", invalid_amount_calculations)
+    if missing_columns:
+        return {
+            "dataset": dataset,
+            "row_count": row_count,
+            "overall_status": "FAIL",
+            "run_timestamp": datetime.now(timezone.utc).isoformat(),
+            "checks": checks,
+        }
 
-
-# ---------------------------------------------------------
-# Status Validation
-# ---------------------------------------------------------
-
-valid_order_statuses = [
-    "COMPLETED",
-    "SHIPPED",
-    "PROCESSING",
-    "CANCELLED",
-    "RETURNED"
-]
-
-valid_payment_statuses = [
-    "PAID",
-    "PENDING",
-    "FAILED",
-    "REFUNDED"
-]
-
-status_validation_counts = orders_df.select(
-    count(
-        when(
-            ~col("order_status").isin(valid_order_statuses),
-            1
+    # --------------------------------------------------
+    # 2. Required fields
+    # --------------------------------------------------
+    for name in required_columns:
+        add_check(
+            f"Required Field: {name}",
+            count_invalid(orders_df, blank(name)),
         )
-    ).alias("invalid_order_status"),
 
-    count(
-        when(
-            ~col("payment_status").isin(valid_payment_statuses),
-            1
+    # --------------------------------------------------
+    # 3. Duplicate Order IDs
+    # Count extra duplicate rows, not duplicate groups.
+    # --------------------------------------------------
+    duplicate_order_groups = (
+        orders_df
+        .filter(F.col("order_id").isNotNull())
+        .groupBy("order_id")
+        .count()
+        .filter(F.col("count") > 1)
+    )
+
+    duplicate_order_count = (
+        duplicate_order_groups
+        .agg(
+            F.coalesce(
+                F.sum(F.col("count") - 1), F.lit(0)
+            ).alias("invalid")
         )
-    ).alias("invalid_payment_status")
-).collect()[0]
-
-invalid_order_status_count = status_validation_counts["invalid_order_status"]
-invalid_payment_status_count = status_validation_counts["invalid_payment_status"]
-
-print("Invalid order statuses:", invalid_order_status_count)
-print("Invalid payment statuses:", invalid_payment_status_count)
-
-# ---------------------------------------------------------
-# Payment Status Validation
-# ---------------------------------------------------------
-
-valid_payment_statuses = [
-    "PAID",
-    "PENDING",
-    "FAILED",
-    "REFUNDED"
-]
-
-invalid_payment_status_count = (
-    orders_df
-    .filter(~col("payment_status").isin(valid_payment_statuses))
-    .count()
-)
-
-print("Invalid payment statuses:", invalid_payment_status_count)
-
-# ---------------------------------------------------------
-# Referential Integrity Validation
-# ---------------------------------------------------------
-
-customers_path = r".\ecommerce-data-platform\data\customers.csv"
-products_path = r".\ecommerce-data-platform\data\products.csv"
-
-customers_df = spark.read.option("header", True).csv(customers_path)
-products_df = spark.read.option("header", True).csv(products_path)
-
-print("Customers loaded:", customers_df.count())
-print("Products loaded:", products_df.count())
-
-# ---------------------------------------------------------
-# Customer Referential Integrity
-# ---------------------------------------------------------
-
-invalid_customer_count = (
-    orders_df
-    .join(
-        customers_df.select("customer_id"),
-        on="customer_id",
-        how="left_anti"
-    )
-    .count()
-)
-
-print("Orders with invalid customer IDs:", invalid_customer_count)
-
-# ---------------------------------------------------------
-# Product Referential Integrity
-# ---------------------------------------------------------
-
-invalid_product_count = (
-    orders_df
-    .join(
-        products_df.select("product_id"),
-        on="product_id",
-        how="left_anti"
-    )
-    .count()
-)
-
-print("Orders with invalid product IDs:", invalid_product_count)
-
-# ---------------------------------------------------------
-# Reference Data Key Validation
-# ---------------------------------------------------------
-
-duplicate_customer_ids = (
-    customers_df
-    .groupBy("customer_id")
-    .count()
-    .filter(col("count") > 1)
-    .count()
-)
-
-duplicate_product_ids = (
-    products_df
-    .groupBy("product_id")
-    .count()
-    .filter(col("count") > 1)
-    .count()
-)
-
-print("Duplicate customer IDs:", duplicate_customer_ids)
-print("Duplicate product IDs:", duplicate_product_ids)
-
-
-# ---------------------------------------------------------
-# Validation Summary
-# ---------------------------------------------------------
-
-validation_results = [
-    ("Required Fields", 0),
-    ("Duplicate Order IDs", duplicate_order_count),
-    ("Invalid Quantity", invalid_quantity),
-    ("Invalid Unit Price", invalid_unit_price),
-    ("Invalid Order Amount", invalid_order_amount),
-    ("Invalid Amount Calculations", invalid_amount_calculations),
-    ("Invalid Order Status", invalid_order_status_count),
-    ("Invalid Payment Status", invalid_payment_status_count),
-    ("Invalid Customer IDs", invalid_customer_count),
-    ("Invalid Product IDs", invalid_product_count)
-]
-
-print("\nValidation Summary")
-print("-" * 60)
-
-for validation_name, invalid_records in validation_results:
-
-    status = "PASS" if invalid_records == 0 else "FAIL"
-
-    print(
-        f"{validation_name:<30} "
-        f"{invalid_records:<10} "
-        f"{status}"
+        .first()["invalid"]
     )
 
-# ---------------------------------------------------------
-# Validation Report
-# ---------------------------------------------------------
+    add_check("Duplicate Order IDs", duplicate_order_count)
 
-validation_run_timestamp = datetime.now()
+    # --------------------------------------------------
+    # 4. Numeric business rules
+    # Null values are handled by required-field checks.
+    # They are also excluded from these specific checks.
+    # --------------------------------------------------
+    quantity = F.col("quantity").cast("decimal(20,4)")
+    unit_price = F.col("unit_price").cast("decimal(20,4)")
+    order_amount = F.col("order_amount").cast("decimal(20,2)")
 
-validation_report = [
-    {
-        "dataset": "orders",
-        "validation_name": validation_name,
-        "invalid_records": invalid_records,
-        "status": "PASS" if invalid_records == 0 else "FAIL",
-        "run_timestamp": validation_run_timestamp
+    add_check(
+        "Quantity Must Be Positive",
+        count_invalid(
+            orders_df,
+            F.col("quantity").isNotNull()
+            & (
+                quantity.isNull()
+                | (quantity <= 0)
+            ),
+        ),
+    )
+
+    add_check(
+        "Unit Price Must Be Non-Negative",
+        count_invalid(
+            orders_df,
+            F.col("unit_price").isNotNull()
+            & (
+                unit_price.isNull()
+                | (unit_price < 0)
+            ),
+        ),
+    )
+
+    add_check(
+        "Order Amount Must Be Non-Negative",
+        count_invalid(
+            orders_df,
+            F.col("order_amount").isNotNull()
+            & (
+                order_amount.isNull()
+                | (order_amount < 0)
+            ),
+        ),
+    )
+
+    # --------------------------------------------------
+    # 5. Order amount consistency
+    # Expected amount = quantity * unit_price,
+    # rounded to 2 decimal places.
+    # --------------------------------------------------
+    expected_amount = F.round(
+        quantity * unit_price, 2
+    ).cast("decimal(20,2)")
+
+    invalid_amount_calculations = count_invalid(
+        orders_df,
+        quantity.isNull()
+        | unit_price.isNull()
+        | order_amount.isNull()
+        | (
+            order_amount
+            != expected_amount
+        ),
+    )
+
+    add_check(
+        "Order Amount Calculation",
+        invalid_amount_calculations,
+    )
+
+    # --------------------------------------------------
+    # 6. Allowed order statuses
+    # --------------------------------------------------
+    valid_order_statuses = [
+        "COMPLETED",
+        "SHIPPED",
+        "PROCESSING",
+        "CANCELLED",
+        "RETURNED",
+    ]
+
+    add_check(
+        "Order Status Validity",
+        count_invalid(
+            orders_df,
+            F.col("order_status").isNull()
+            | ~F.col("order_status").isin(valid_order_statuses),
+        ),
+    )
+
+    # --------------------------------------------------
+    # 7. Allowed payment statuses
+    # --------------------------------------------------
+    valid_payment_statuses = [
+        "PAID",
+        "PENDING",
+        "FAILED",
+        "REFUNDED",
+    ]
+
+    add_check(
+        "Payment Status Validity",
+        count_invalid(
+            orders_df,
+            F.col("payment_status").isNull()
+            | ~F.col("payment_status").isin(valid_payment_statuses),
+        ),
+    )
+
+    # --------------------------------------------------
+    # 8. Order timestamp validity
+    # --------------------------------------------------
+    timestamp_type = orders_df.schema["order_timestamp"].dataType
+
+    if isinstance(timestamp_type, (DateType, TimestampType)):
+        parsed_timestamp = F.col("order_timestamp").cast("timestamp")
+    else:
+        parsed_timestamp = F.coalesce(
+            F.to_timestamp(F.col("order_timestamp")),
+            F.to_timestamp(
+                F.col("order_timestamp"),
+                "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
+            ),
+            F.to_timestamp(
+                F.col("order_timestamp"),
+                "yyyy-MM-dd HH:mm:ss",
+            ),
+        )
+
+    add_check(
+        "Order Timestamp Validity",
+        count_invalid(
+            orders_df,
+            F.col("order_timestamp").isNull()
+            | parsed_timestamp.isNull()
+            | (parsed_timestamp > F.current_timestamp()),
+        ),
+    )
+
+    # --------------------------------------------------
+    # 9. Load Raw reference datasets
+    # --------------------------------------------------
+    customers_df = spark.read.parquet(customers_path)
+    products_df = spark.read.parquet(products_path)
+
+    reference_keys = [
+        (customers_df, "customer_id", "Customers Reference Schema"),
+        (products_df, "product_id", "Products Reference Schema"),
+    ]
+
+    missing_reference_columns = []
+
+    for reference_df, key, check_name in reference_keys:
+        if key not in reference_df.columns:
+            missing_reference_columns.append(key)
+
+    add_check(
+        "Reference Dataset Schemas",
+        len(missing_reference_columns),
+        f"Missing keys: {missing_reference_columns}"
+        if missing_reference_columns else "Reference keys exist",
+    )
+
+    if missing_reference_columns:
+        return {
+            "dataset": dataset,
+            "row_count": row_count,
+            "overall_status": "FAIL",
+            "run_timestamp": datetime.now(timezone.utc).isoformat(),
+            "checks": checks,
+        }
+
+    # --------------------------------------------------
+    # 10. Reference dataset key quality
+    # Duplicate reference keys should fail validation.
+    # --------------------------------------------------
+    duplicate_customer_groups = (
+        customers_df
+        .filter(F.col("customer_id").isNotNull())
+        .groupBy("customer_id")
+        .count()
+        .filter(F.col("count") > 1)
+    )
+
+    duplicate_customer_count = duplicate_customer_groups.count()
+
+    add_check(
+        "Duplicate Customer Reference IDs",
+        duplicate_customer_count,
+    )
+
+    duplicate_product_groups = (
+        products_df
+        .filter(F.col("product_id").isNotNull())
+        .groupBy("product_id")
+        .count()
+        .filter(F.col("count") > 1)
+    )
+
+    duplicate_product_count = duplicate_product_groups.count()
+
+    add_check(
+        "Duplicate Product Reference IDs",
+        duplicate_product_count,
+    )
+
+    # --------------------------------------------------
+    # 11. Customer referential integrity
+    # --------------------------------------------------
+    order_customers = (
+        orders_df
+        .select("customer_id")
+        .filter(F.col("customer_id").isNotNull())
+        .distinct()
+    )
+
+    known_customers = (
+        customers_df
+        .select("customer_id")
+        .filter(F.col("customer_id").isNotNull())
+        .distinct()
+    )
+
+    invalid_customer_count = (
+        order_customers
+        .join(
+            known_customers,
+            on="customer_id",
+            how="left_anti",
+        )
+        .count()
+    )
+
+    add_check(
+        "Customer Referential Integrity",
+        invalid_customer_count,
+    )
+
+    # --------------------------------------------------
+    # 12. Product referential integrity
+    # --------------------------------------------------
+    order_products = (
+        orders_df
+        .select("product_id")
+        .filter(F.col("product_id").isNotNull())
+        .distinct()
+    )
+
+    known_products = (
+        products_df
+        .select("product_id")
+        .filter(F.col("product_id").isNotNull())
+        .distinct()
+    )
+
+    invalid_product_count = (
+        order_products
+        .join(
+            known_products,
+            on="product_id",
+            how="left_anti",
+        )
+        .count()
+    )
+
+    add_check(
+        "Product Referential Integrity",
+        invalid_product_count,
+    )
+
+    # --------------------------------------------------
+    # 13. Overall report
+    # --------------------------------------------------
+    overall_status = (
+        "PASS"
+        if all(check["status"] == "PASS" for check in checks)
+        else "FAIL"
+    )
+
+    report = {
+        "dataset": dataset,
+        "row_count": row_count,
+        "overall_status": overall_status,
+        "run_timestamp": datetime.now(timezone.utc).isoformat(),
+        "checks": checks,
     }
-    for validation_name, invalid_records in validation_results
-]
 
-for result in validation_report:
-    print(result)
+    print("Orders Validation Summary")
 
-# ---------------------------------------------------------
-# Save Validation Report
-# ---------------------------------------------------------
+    for check in checks:
+        print(
+            f"{check['validation_name']}: "
+            f"{check['status']} "
+            f"(invalid records: {check['invalid_records']})"
+        )
 
-validation_report_path = r".\ecommerce-data-platform\data\processed\validation"
+    print("Overall Orders Validation Status:", overall_status)
 
-validation_report_df = spark.createDataFrame(validation_report)
-
-(
-    validation_report_df
-    .write
-    .mode("overwrite")
-    .parquet(validation_report_path)
-)
-
-print("\nValidation report written successfully.")
-
-
-# ---------------------------------------------------------
-# Overall Validation Status
-# ---------------------------------------------------------
-
-overall_status = (
-    "PASS"
-    if all(invalid_records == 0 for _, invalid_records in validation_results)
-    else "FAIL"
-)
-
-print("\nOverall Validation Status:", overall_status)
+    return report

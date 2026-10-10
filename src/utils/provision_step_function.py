@@ -19,15 +19,17 @@ STEP_FUNCTION_ROLE = (
 
 SOURCE_GENERATION_GLUE_JOB = "ecommerce_generate_source_data"
 RAW_LAYER_GLUE_JOB = "ecommerce_raw_layer"
-
+VALIDATION_MAIN_GLUE_JOB = "ecommerce-validation-main"
 
 # =========================================================
 # 2. STATE MACHINE DEFINITION
 # =========================================================
 
+
 STATE_MACHINE_DEFINITION = {
     "Comment": (
-        "E-Commerce Source Generation and Raw Layer Pipeline"
+        "E-Commerce Source Generation, Raw Layer, "
+        "and Validation Pipeline"
     ),
     "StartAt": "Generate Source Data",
     "States": {
@@ -62,6 +64,23 @@ STATE_MACHINE_DEFINITION = {
                     "Next": "Raw Layer Failed"
                 }
             ],
+            "Next": "Run Validation Main"
+        },
+
+        "Run Validation Main": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::glue:startJobRun.sync",
+            "Parameters": {
+                "JobName": VALIDATION_MAIN_GLUE_JOB
+            },
+            "ResultPath": "$.validation",
+            "Catch": [
+                {
+                    "ErrorEquals": ["States.ALL"],
+                    "ResultPath": "$.error",
+                    "Next": "Validation Failed"
+                }
+            ],
             "Next": "Pipeline Completed"
         },
 
@@ -85,6 +104,16 @@ STATE_MACHINE_DEFINITION = {
                 "Raw-layer ingestion failed. "
                 "Check AWS Glue and CloudWatch logs."
             )
+        },
+
+        "Validation Failed": {
+            "Type": "Fail",
+            "Error": "ValidationExecutionFailed",
+            "Cause": (
+                "Raw dataset validation failed. "
+                "Check validation JSON reports and AWS Glue logs. "
+                "Downstream processing must not start."
+            )
         }
     }
 }
@@ -94,11 +123,15 @@ STATE_MACHINE_DEFINITION = {
 # 3. VERIFY REQUIRED GLUE JOBS
 # =========================================================
 
+
 def verify_glue_jobs(glue_client):
-    for job_name in [
+    required_jobs = [
         SOURCE_GENERATION_GLUE_JOB,
-        RAW_LAYER_GLUE_JOB
-    ]:
+        RAW_LAYER_GLUE_JOB,
+        VALIDATION_MAIN_GLUE_JOB,
+    ]
+
+    for job_name in required_jobs:
         try:
             response = glue_client.get_job(JobName=job_name)
             job = response["Job"]
@@ -112,9 +145,8 @@ def verify_glue_jobs(glue_client):
         except glue_client.exceptions.EntityNotFoundException as exc:
             raise RuntimeError(
                 f"Required Glue job '{job_name}' does not exist "
-                f"in region {AWS_REGION}. "
-                "Provision both Glue jobs before deploying "
-                "the state machine."
+                f"in region {AWS_REGION}. Provision all required "
+                "Glue jobs before deploying the state machine."
             ) from exc
 
 
@@ -175,10 +207,13 @@ def main():
     print("SOURCE GENERATION + RAW LAYER DEPLOYMENT")
     print("=" * 70)
 
+
     print("AWS Region:", AWS_REGION)
     print("State Machine:", STATE_MACHINE_NAME)
     print("Source Generation Job:", SOURCE_GENERATION_GLUE_JOB)
     print("Raw Layer Job:", RAW_LAYER_GLUE_JOB)
+    print("Validation Main Job:", VALIDATION_MAIN_GLUE_JOB)
+
 
     session = boto3.Session(region_name=AWS_REGION)
 

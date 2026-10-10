@@ -1,233 +1,187 @@
+
+from datetime import datetime, timezone
+
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, count, when
-from datetime import datetime
-
-spark = (
-    SparkSession.builder
-    .appName("ECommerceCustomerValidation")
-    .master("local[2]")
-    .config("spark.driver.host", "127.0.0.1")
-    .config("spark.driver.bindAddress", "127.0.0.1")
-    .config("spark.hadoop.fs.permissions.umask-mode", "000")
-    .getOrCreate()
-)
+from pyspark.sql import functions as F
+from pyspark.sql.types import StringType, DateType, TimestampType
 
 
-customers_path = r".\ecommerce-data-platform\data\raw\customers"
+def validate(spark: SparkSession, bucket: str) -> dict:
+    """Strict validation of the Raw Customers dataset."""
 
-customers_df = spark.read.parquet(customers_path)
+    dataset = "customers"
+    input_path = f"s3://{bucket}/raw/customers/"
 
-print("Customers loaded from Raw layer")
-print("Customer count:", customers_df.count())
-
-customers_df.printSchema()
-
-required_columns = [
-    "customer_id",
-    "name",
-    "email",
-    "country",
-    "signup_date"
-]
-
-required_null_counts = customers_df.select(
-    *[
-        count(
-            when(col(column_name).isNull(), 1)
-        ).alias(column_name)
-        for column_name in required_columns
+    required_columns = [
+        "customer_id",
+        "name",
+        "email",
+        "country",
+        "signup_date",
     ]
-).collect()[0]
 
-print("\nRequired Field Validation:")
+    checks = []
 
-for column_name in required_columns:
-    null_count = required_null_counts[column_name]
+    def add_check(name, invalid_count, details=None):
+        invalid_count = int(invalid_count)
+        checks.append({
+            "validation_name": name,
+            "invalid_records": invalid_count,
+            "status": "PASS" if invalid_count == 0 else "FAIL",
+            "details": details or "",
+        })
 
-    status = "PASS" if null_count == 0 else "FAIL"
+    def invalid_count(df, condition):
+        return df.filter(condition).count()
 
-    print(
-        f"{column_name:<15} "
-        f"Null count: {null_count:<8} "
-        f"Status: {status}"
+    # 1. Read Raw data. Read errors should fail the Glue job.
+    df = spark.read.parquet(input_path)
+    row_count = df.count()
+
+    print(f"Loaded {row_count} customers from {input_path}")
+
+    # 2. Required schema check.
+    missing = [
+        c for c in required_columns
+        if c not in df.columns
+    ]
+
+    add_check(
+        "Required Schema",
+        len(missing),
+        f"Missing columns: {missing}" if missing else "Schema present",
     )
 
-# ---------------------------------------------------------
-# Duplicate Customer ID Validation
-# ---------------------------------------------------------
+    # Do not continue with column-based checks if schema is incomplete.
+    if missing:
+        return {
+            "dataset": dataset,
+            "row_count": row_count,
+            "overall_status": "FAIL",
+            "run_timestamp": datetime.now(timezone.utc).isoformat(),
+            "checks": checks,
+        }
 
-duplicate_customer_ids = (
-    customers_df
-    .groupBy("customer_id")
-    .count()
-    .filter(col("count") > 1)
-)
+    # 3. Unexpected columns: informational strictness check.
+    unexpected = [
+        c for c in df.columns
+        if c not in required_columns
+    ]
 
-duplicate_customer_id_count = duplicate_customer_ids.count()
-
-print("\nDuplicate Customer ID Validation:")
-print("Duplicate customer IDs:", duplicate_customer_id_count)
-
-status = "PASS" if duplicate_customer_id_count == 0 else "FAIL"
-
-print("Status:", status)
-
-# ---------------------------------------------------------
-# Email Format Validation
-# ---------------------------------------------------------
-
-invalid_email_count = customers_df.filter(
-    ~col("email").rlike(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
-).count()
-
-print("\nEmail Format Validation:")
-print("Invalid email records:", invalid_email_count)
-
-status = "PASS" if invalid_email_count == 0 else "FAIL"
-
-print("Status:", status)
-
-# ---------------------------------------------------------
-# Customer ID Format Validation
-# ---------------------------------------------------------
-
-invalid_customer_id_count = customers_df.filter(
-    ~col("customer_id").rlike(r"^C[0-9]{5}$")
-).count()
-
-print("\nCustomer ID Format Validation:")
-print("Invalid customer ID records:", invalid_customer_id_count)
-
-status = "PASS" if invalid_customer_id_count == 0 else "FAIL"
-
-print("Status:", status)
-
-# ---------------------------------------------------------
-# Country Validation
-# ---------------------------------------------------------
-
-valid_countries = [
-    "India"
-]
-
-invalid_country_count = customers_df.filter(
-    ~col("country").isin(valid_countries)
-).count()
-
-print("\nCountry Validation:")
-print("Invalid country records:", invalid_country_count)
-
-status = "PASS" if invalid_country_count == 0 else "FAIL"
-
-print("Status:", status)
-
-# ---------------------------------------------------------
-# Signup Date Business Rule Validation
-# ---------------------------------------------------------
-
-from pyspark.sql.functions import current_date
-
-future_signup_date_count = customers_df.filter(
-    col("signup_date") > current_date()
-).count()
-
-print("\nSignup Date Validation:")
-print("Future signup date records:", future_signup_date_count)
-
-status = "PASS" if future_signup_date_count == 0 else "FAIL"
-
-print("Status:", status)
-
-# ---------------------------------------------------------
-# Validation Results
-# ---------------------------------------------------------
-
-validation_results = [
-    ("Required Field Validation", 0),
-    ("Duplicate Customer ID Validation", duplicate_customer_id_count),
-    ("Email Format Validation", invalid_email_count),
-    ("Customer ID Format Validation", invalid_customer_id_count),
-    ("Country Validation", invalid_country_count),
-    ("Signup Date Validation", future_signup_date_count)
-]
-
-print("\nValidation Summary:")
-
-for validation_name, invalid_records in validation_results:
-
-    status = "PASS" if invalid_records == 0 else "FAIL"
-
-    print(
-        f"{validation_name:<40} "
-        f"Invalid Records: {invalid_records:<8} "
-        f"Status: {status}"
+    add_check(
+        "Unexpected Columns",
+        len(unexpected),
+        f"Unexpected columns: {unexpected}" if unexpected else "None",
     )
 
-# ---------------------------------------------------------
-# Overall Validation Status
-# ---------------------------------------------------------
+    # 4. Required values: nulls, empty strings, whitespace-only strings.
+    for name in required_columns:
+        value = F.col(name)
 
-overall_status = (
-    "PASS"
-    if all(invalid_records == 0 for _, invalid_records in validation_results)
-    else "FAIL"
-)
+        blank_condition = (
+            value.isNull()
+            | (F.length(F.trim(value.cast("string"))) == 0)
+        )
 
-print("\nOverall Customer Validation Status:", overall_status)
+        add_check(
+            f"Required Value: {name}",
+            invalid_count(df, blank_condition),
+        )
 
-# ---------------------------------------------------------
-# Validation Report
-# ---------------------------------------------------------
+    # 5. Customer ID format.
+    customer_id_invalid = (
+        F.col("customer_id").isNull()
+        | ~F.col("customer_id").rlike(r"^C[0-9]{5}$")
+    )
 
-validation_run_timestamp = datetime.now()
+    add_check(
+        "Customer ID Format",
+        invalid_count(df, customer_id_invalid),
+        "Expected format: C followed by 5 digits",
+    )
 
-validation_report = [
-    {
-        "dataset": "customers",
-        "validation_name": validation_name,
-        "invalid_records": invalid_records,
-        "status": "PASS" if invalid_records == 0 else "FAIL",
-        "run_timestamp": validation_run_timestamp
+    # 6. Duplicate IDs.
+    duplicate_id_count = (
+        df.filter(F.col("customer_id").isNotNull())
+        .groupBy("customer_id")
+        .count()
+        .filter(F.col("count") > 1)
+        .count()
+    )
+
+    add_check("Duplicate Customer IDs", duplicate_id_count)
+
+    # 7. Email: no surrounding whitespace and expected pattern.
+    email = F.col("email")
+
+    email_invalid = (
+        email.isNull()
+        | (F.length(F.trim(email)) == 0)
+        | (email != F.trim(email))
+        | ~email.rlike(
+            r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$"
+        )
+    )
+
+    add_check("Email Format", invalid_count(df, email_invalid))
+
+    # 8. Country business rule: exactly India.
+    country = F.col("country")
+
+    country_invalid = (
+        country.isNull()
+        | (country != F.lit("India"))
+    )
+
+    add_check("Country Business Rule", invalid_count(df, country_invalid))
+
+    # 9. Signup date: safely parse to date and reject invalid/future dates.
+    # Accepts date/timestamp types and common ISO-style string dates.
+    signup_type = df.schema["signup_date"].dataType
+
+    if isinstance(signup_type, (DateType, TimestampType)):
+        parsed_signup = F.to_date(F.col("signup_date"))
+    else:
+        parsed_signup = F.coalesce(
+            F.to_date(F.col("signup_date"), "yyyy-MM-dd"),
+            F.to_date(F.col("signup_date"), "yyyy-MM-dd HH:mm:ss"),
+            F.to_date(F.col("signup_date"), "yyyy/MM/dd"),
+        )
+
+    date_invalid = (
+        F.col("signup_date").isNull()
+        | parsed_signup.isNull()
+        | (parsed_signup > F.current_date())
+    )
+
+    add_check("Signup Date Validity", invalid_count(df, date_invalid))
+
+    # 10. Check the name field contains non-whitespace text.
+    name_invalid = (
+        F.col("name").isNull()
+        | (F.length(F.trim(F.col("name"))) == 0)
+    )
+
+    add_check("Customer Name", invalid_count(df, name_invalid))
+
+    # 11. Overall status: every check must pass.
+    overall_status = (
+        "PASS"
+        if all(check["status"] == "PASS" for check in checks)
+        else "FAIL"
+    )
+
+    report = {
+        "dataset": dataset,
+        "row_count": row_count,
+        "overall_status": overall_status,
+        "run_timestamp": datetime.now(timezone.utc).isoformat(),
+        "checks": checks,
     }
-    for validation_name, invalid_records in validation_results
-]
 
-print("\nValidation Report:")
+    print(f"Overall {dataset} validation: {overall_status}")
 
-for result in validation_report:
-    print(result)
+    for check in checks:
+        print(check)
 
-# ---------------------------------------------------------
-# Persist Validation Report
-# ---------------------------------------------------------
-
-validation_report_path = (
-    r".\ecommerce-data-platform\data\processed\validation\customers"
-)
-
-validation_report_df = spark.createDataFrame(validation_report)
-
-validation_report_df.write \
-    .mode("overwrite") \
-    .parquet(validation_report_path)
-
-print("\nCustomer validation report written successfully.")
-
-# ---------------------------------------------------------
-# Verify Persisted Validation Report
-# ---------------------------------------------------------
-
-saved_validation_report_df = spark.read.parquet(
-    validation_report_path
-)
-
-print("\nPersisted Validation Report:")
-saved_validation_report_df.show(
-    truncate=False
-)
-
-print(
-    "Persisted validation report count:",
-    saved_validation_report_df.count()
-)
-
+    return report

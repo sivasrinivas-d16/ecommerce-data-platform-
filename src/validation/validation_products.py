@@ -1,326 +1,244 @@
+
+from datetime import datetime, timezone
+
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, count, when
-
-from pyspark.sql.functions import current_date
-from datetime import datetime
-
-# ---------------------------------------------------------
-# Spark Session
-# ---------------------------------------------------------
-
-spark = (
-    SparkSession.builder
-    .appName("ECommerceProductValidation")
-    .master("local[2]")
-    .config("spark.driver.host", "127.0.0.1")
-    .config("spark.driver.bindAddress", "127.0.0.1")
-    .config("spark.hadoop.fs.permissions.umask-mode", "000")
-    .getOrCreate()
-)
+from pyspark.sql import functions as F
+from pyspark.sql.types import DateType, TimestampType
 
 
-# ---------------------------------------------------------
-# Load Products from Raw Layer
-# ---------------------------------------------------------
+def validate(spark: SparkSession, bucket: str) -> dict:
+    """Strict validation of Raw Products using AWS Glue."""
 
-products_path = r".\ecommerce-data-platform\data\raw\products"
+    dataset = "products"
+    products_path = f"s3://{bucket}/raw/products/"
 
-products_df = spark.read.parquet(products_path)
+    checks = []
 
-total_records = products_df.count()
+    def add_check(name, invalid_records, details=""):
+        invalid_records = int(invalid_records or 0)
+        checks.append({
+            "validation_name": name,
+            "invalid_records": invalid_records,
+            "status": "PASS" if invalid_records == 0 else "FAIL",
+            "details": details,
+        })
 
-print("Products loaded from Raw layer")
-print("Total product records:", total_records)
+    def count_invalid(df, condition):
+        return df.filter(condition).count()
 
-print("\nProduct Schema:")
-products_df.printSchema()
+    def blank(name):
+        value = F.col(name)
+        return (
+            value.isNull()
+            | (F.length(F.trim(value.cast("string"))) == 0)
+        )
 
+    # --------------------------------------------------
+    # 1. Load Raw Products
+    # --------------------------------------------------
+    products_df = spark.read.parquet(products_path)
+    row_count = products_df.count()
 
-# ---------------------------------------------------------
-# Required Field Validation
-# ---------------------------------------------------------
+    print("Products loaded from Raw layer")
+    print("Total product records:", row_count)
+    products_df.printSchema()
 
-required_columns = [
-    "product_id",
-    "product_name",
-    "category",
-    "brand",
-    "price",
-    "stock_quantity",
-    "product_status",
-    "created_date"
-]
-
-
-required_null_counts = products_df.select(
-    *[
-        count(
-            when(col(column_name).isNull(), 1)
-        ).alias(column_name)
-        for column_name in required_columns
+    required_columns = [
+        "product_id",
+        "product_name",
+        "category",
+        "brand",
+        "price",
+        "stock_quantity",
+        "product_status",
+        "created_date",
     ]
-).collect()[0]
 
+    missing_columns = [
+        name for name in required_columns
+        if name not in products_df.columns
+    ]
 
-print("\nRequired Field Validation:")
-
-for column_name in required_columns:
-
-    null_count = required_null_counts[column_name]
-
-    status = "PASS" if null_count == 0 else "FAIL"
-
-    print(
-        f"{column_name:<18} "
-        f"Null count: {null_count:<8} "
-        f"Status: {status}"
+    add_check(
+        "Required Schema",
+        len(missing_columns),
+        f"Missing columns: {missing_columns}"
+        if missing_columns else "All required columns exist",
     )
 
-# ---------------------------------------------------------
-# Duplicate Product ID Validation
-# ---------------------------------------------------------
+    if missing_columns:
+        return {
+            "dataset": dataset,
+            "row_count": row_count,
+            "overall_status": "FAIL",
+            "run_timestamp": datetime.now(timezone.utc).isoformat(),
+            "checks": checks,
+        }
 
-duplicate_product_ids = (
-    products_df
-    .groupBy("product_id")
-    .count()
-    .filter(col("count") > 1)
-)
+    # --------------------------------------------------
+    # 2. Required fields
+    # Reject null, empty, and whitespace-only values.
+    # --------------------------------------------------
+    for name in required_columns:
+        add_check(
+            f"Required Field: {name}",
+            count_invalid(products_df, blank(name)),
+        )
 
-duplicate_product_id_count = duplicate_product_ids.count()
-
-print("\nDuplicate Product ID Validation:")
-print("Duplicate product IDs:", duplicate_product_id_count)
-
-status = (
-    "PASS"
-    if duplicate_product_id_count == 0
-    else "FAIL"
-)
-
-print("Status:", status)
-
-# ---------------------------------------------------------
-# Product ID Format Validation
-# ---------------------------------------------------------
-
-invalid_product_id_count = products_df.filter(
-    ~col("product_id").rlike(r"^P[0-9]{6}$")
-).count()
-
-print("\nProduct ID Format Validation:")
-print("Invalid product ID records:", invalid_product_id_count)
-
-status = (
-    "PASS"
-    if invalid_product_id_count == 0
-    else "FAIL"
-)
-
-print("Status:", status)
-
-# ---------------------------------------------------------
-# Product Price Validation
-# ---------------------------------------------------------
-
-invalid_price_count = products_df.filter(
-    col("price") < 0
-).count()
-
-print("\nProduct Price Validation:")
-print("Invalid price records:", invalid_price_count)
-
-status = (
-    "PASS"
-    if invalid_price_count == 0
-    else "FAIL"
-)
-
-print("Status:", status)
-
-# ---------------------------------------------------------
-# Stock Quantity Validation
-# ---------------------------------------------------------
-
-invalid_stock_quantity_count = products_df.filter(
-    col("stock_quantity") < 0
-).count()
-
-print("\nStock Quantity Validation:")
-print(
-    "Invalid stock quantity records:",
-    invalid_stock_quantity_count
-)
-
-status = (
-    "PASS"
-    if invalid_stock_quantity_count == 0
-    else "FAIL"
-)
-
-print("Status:", status)
-
-# ---------------------------------------------------------
-# Product Status Validation
-# ---------------------------------------------------------
-
-valid_product_statuses = [
-    "ACTIVE",
-    "INACTIVE",
-    "DISCONTINUED"
-]
-
-invalid_product_status_count = products_df.filter(
-    ~col("product_status").isin(valid_product_statuses)
-).count()
-
-print("\nProduct Status Validation:")
-print(
-    "Invalid product status records:",
-    invalid_product_status_count
-)
-
-status = (
-    "PASS"
-    if invalid_product_status_count == 0
-    else "FAIL"
-)
-
-
-# ---------------------------------------------------------
-# Created Date Validation
-# ---------------------------------------------------------
-
-
-
-invalid_created_date_count = products_df.filter(
-    col("created_date").isNull()
-    | (col("created_date") > current_date())
-).count()
-
-print("\nCreated Date Validation:")
-print(
-    "Invalid created date records:",
-    invalid_created_date_count
-)
-
-status = (
-    "PASS"
-    if invalid_created_date_count == 0
-    else "FAIL"
-)
-
-print("Status:", status)
-
-# ---------------------------------------------------------
-# Validation Results
-# ---------------------------------------------------------
-
-validation_results = [
-    ("Required Field Validation", 0),
-    ("Duplicate Product ID Validation", duplicate_product_id_count),
-    ("Product ID Format Validation", invalid_product_id_count),
-    ("Product Price Validation", invalid_price_count),
-    ("Stock Quantity Validation", invalid_stock_quantity_count),
-    ("Product Status Validation", invalid_product_status_count),
-    ("Created Date Validation", invalid_created_date_count)
-]
-
-
-# ---------------------------------------------------------
-# Validation Summary
-# ---------------------------------------------------------
-
-print("\nValidation Summary:")
-
-for validation_name, invalid_records in validation_results:
-
-    status = "PASS" if invalid_records == 0 else "FAIL"
-
-    print(
-        f"{validation_name:<40} "
-        f"Invalid Records: {invalid_records:<8} "
-        f"Status: {status}"
+    # --------------------------------------------------
+    # 3. Product ID format
+    # Expected: P followed by exactly 6 digits.
+    # --------------------------------------------------
+    invalid_product_ids = count_invalid(
+        products_df,
+        F.col("product_id").isNull()
+        | ~F.col("product_id").rlike(r"^P[0-9]{6}$"),
     )
 
+    add_check("Product ID Format", invalid_product_ids)
 
-# ---------------------------------------------------------
-# Overall Validation Status
-# ---------------------------------------------------------
-
-overall_status = (
-    "PASS"
-    if all(
-        invalid_records == 0
-        for _, invalid_records in validation_results
+    # --------------------------------------------------
+    # 4. Product ID uniqueness
+    # Count duplicate rows beyond the first occurrence.
+    # --------------------------------------------------
+    duplicate_groups = (
+        products_df
+        .filter(F.col("product_id").isNotNull())
+        .groupBy("product_id")
+        .count()
+        .filter(F.col("count") > 1)
     )
-    else "FAIL"
-)
 
-print(
-    "\nOverall Product Validation Status:",
-    overall_status
-)
+    duplicate_product_count = (
+        duplicate_groups
+        .agg(
+            F.coalesce(
+                F.sum(F.col("count") - 1), F.lit(0)
+            ).alias("invalid")
+        )
+        .first()["invalid"]
+    )
 
-# ---------------------------------------------------------
-# Validation Report
-# ---------------------------------------------------------
+    add_check("Duplicate Product IDs", duplicate_product_count)
 
-validation_run_timestamp = datetime.now()
+    # --------------------------------------------------
+    # 5. Product name, category, brand
+    # Required-field checks already catch blank values.
+    # These checks reject surrounding whitespace.
+    # --------------------------------------------------
+    for name in ["product_name", "category", "brand"]:
+        add_check(
+            f"{name} Whitespace Validation",
+            count_invalid(
+                products_df,
+                F.col(name).isNotNull()
+                & (F.col(name) != F.trim(F.col(name))),
+            ),
+        )
 
-validation_report = [
-    {
-        "dataset": "products",
-        "validation_name": validation_name,
-        "invalid_records": invalid_records,
-        "status": "PASS" if invalid_records == 0 else "FAIL",
-        "run_timestamp": validation_run_timestamp
+    # --------------------------------------------------
+    # 6. Price validation
+    # Preserve original rule: price must be >= 0.
+    # Also reject non-numeric values.
+    # --------------------------------------------------
+    price = F.col("price").cast("decimal(20,4)")
+
+    invalid_price_count = count_invalid(
+        products_df,
+        F.col("price").isNotNull()
+        & (
+            price.isNull()
+            | (price < 0)
+        ),
+    )
+
+    add_check("Product Price Validity", invalid_price_count)
+
+    # --------------------------------------------------
+    # 7. Stock quantity validation
+    # Stock must be a whole number >= 0.
+    # --------------------------------------------------
+    stock = F.col("stock_quantity").cast("decimal(20,4)")
+
+    invalid_stock_count = count_invalid(
+        products_df,
+        F.col("stock_quantity").isNotNull()
+        & (
+            stock.isNull()
+            | (stock < 0)
+            | (stock != F.floor(stock))
+        ),
+    )
+
+    add_check("Stock Quantity Validity", invalid_stock_count)
+
+    # --------------------------------------------------
+    # 8. Product status validation
+    # --------------------------------------------------
+    valid_product_statuses = [
+        "ACTIVE",
+        "INACTIVE",
+        "DISCONTINUED",
+    ]
+
+    invalid_status_count = count_invalid(
+        products_df,
+        F.col("product_status").isNull()
+        | ~F.col("product_status").isin(valid_product_statuses),
+    )
+
+    add_check("Product Status Validity", invalid_status_count)
+
+    # --------------------------------------------------
+    # 9. Created date validation
+    # Reject unparseable and future dates.
+    # --------------------------------------------------
+    date_type = products_df.schema["created_date"].dataType
+
+    if isinstance(date_type, (DateType, TimestampType)):
+        parsed_date = F.to_date(F.col("created_date"))
+    else:
+        parsed_date = F.coalesce(
+            F.to_date(F.col("created_date"), "yyyy-MM-dd"),
+            F.to_date(F.col("created_date"), "yyyy-MM-dd HH:mm:ss"),
+            F.to_date(F.col("created_date"), "yyyy/MM/dd"),
+        )
+
+    invalid_created_date_count = count_invalid(
+        products_df,
+        F.col("created_date").isNull()
+        | parsed_date.isNull()
+        | (parsed_date > F.current_date()),
+    )
+
+    add_check("Created Date Validity", invalid_created_date_count)
+
+    # --------------------------------------------------
+    # 10. Overall validation report
+    # --------------------------------------------------
+    overall_status = (
+        "PASS"
+        if all(check["status"] == "PASS" for check in checks)
+        else "FAIL"
+    )
+
+    report = {
+        "dataset": dataset,
+        "row_count": row_count,
+        "overall_status": overall_status,
+        "run_timestamp": datetime.now(timezone.utc).isoformat(),
+        "checks": checks,
     }
-    for validation_name, invalid_records in validation_results
-]
 
-print("\nValidation Report:")
+    print("Products Validation Summary")
 
-for result in validation_report:
-    print(result)
+    for check in checks:
+        print(
+            f"{check['validation_name']}: "
+            f"{check['status']} "
+            f"(invalid records: {check['invalid_records']})"
+        )
 
-# ---------------------------------------------------------
-# Persist Validation Report
-# ---------------------------------------------------------
+    print("Overall Product Validation Status:", overall_status)
 
-validation_report_path = (
-    r".\ecommerce-data-platform\data\processed\validation\products"
-)
-
-validation_report_df = spark.createDataFrame(validation_report)
-
-validation_report_df.write \
-    .mode("overwrite") \
-    .parquet(validation_report_path)
-
-print("\nProduct validation report written successfully.")
-
-# ---------------------------------------------------------
-# Verify Persisted Validation Report
-# ---------------------------------------------------------
-
-saved_validation_report_df = spark.read.parquet(
-    validation_report_path
-)
-
-print("\nPersisted Product Validation Report:")
-saved_validation_report_df.show(
-    truncate=False
-)
-
-print(
-    "Persisted validation report count:",
-    saved_validation_report_df.count()
-)
-
-
-# ---------------------------------------------------------
-# Stop Spark
-# ---------------------------------------------------------
-
-spark.stop()
+    return report

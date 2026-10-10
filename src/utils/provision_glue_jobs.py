@@ -242,9 +242,30 @@ def provision_raw_layer_job():
         timeout=180
     )
 
+# ============================================================
+# VALIDATION MAIN GLUE JOB
+# ============================================================
+
+def provision_validation_main_job():
+
+    validation_arguments = {
+        "--S3_BUCKET": S3_BUCKET,
+        "--extra-py-files": VALIDATION_MODULES,
+    }
+
+    create_or_update_job(
+        job_name=VALIDATION_MAIN_JOB,
+        script_location=VALIDATION_MAIN_SCRIPT,
+        extra_arguments=validation_arguments,
+        worker_type="G.1X",
+        number_of_workers=5,
+        timeout=180,
+    )
+
+
 
 # ============================================================
-# 14. MAIN
+# MAIN
 # ============================================================
 
 def main():
@@ -257,6 +278,9 @@ def main():
 
     print("\nProvisioning combined raw-layer job...")
     provision_raw_layer_job()
+
+    print("\nProvisioning validation main job...")
+    provision_validation_main_job()
 
     print("\n" + "=" * 70)
     print("GLUE JOB PROVISIONING COMPLETED")
