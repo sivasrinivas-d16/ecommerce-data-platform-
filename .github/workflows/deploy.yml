@@ -126,11 +126,12 @@ jobs:
 
           echo "Python syntax checks passed."
 
+      
       # =====================================================
-      # 7. PACKAGE RAW-LAYER MODULES
+      # 7. PACKAGE RAW-LAYER AND VALIDATION MODULES
       # =====================================================
 
-      - name: Package raw-layer modules
+      - name: Package raw-layer and validation modules
         shell: bash
         run: |
           set -euo pipefail
@@ -141,36 +142,62 @@ jobs:
           from pathlib import Path
           from zipfile import ZipFile, ZIP_DEFLATED
 
-          source = Path("src/ingestion")
-          destination = Path("build/raw_modules.zip")
+          def create_zip(source_dir, destination, modules):
+              source = Path(source_dir)
+              destination = Path(destination)
 
-          modules = [
-              "ingest_customers.py",
-              "ingest_products.py",
-              "ingest_orders.py",
-              "ingest_payments.py",
-              "ingest_events.py",
-          ]
-
-          for module in modules:
-              path = source / module
-              if not path.is_file():
-                  raise FileNotFoundError(f"Missing module: {path}")
-
-          with ZipFile(destination, "w", ZIP_DEFLATED) as archive:
               for module in modules:
-                  archive.write(source / module, arcname=module)
+                  path = source / module
+                  if not path.is_file():
+                      raise FileNotFoundError(
+                          f"Missing module: {path}"
+                      )
 
-          with ZipFile(destination) as archive:
-              names = archive.namelist()
-              print("ZIP contents:", names)
+              with ZipFile(destination, "w", ZIP_DEFLATED) as archive:
+                  for module in modules:
+                      archive.write(
+                          source / module,
+                          arcname=module
+                      )
 
-              if set(names) != set(modules) or len(names) != len(modules):
-                  raise RuntimeError("Unexpected raw-layer ZIP contents.")
+              with ZipFile(destination, "r") as archive:
+                  names = archive.namelist()
+                  print(f"{destination} contents:", names)
 
-          print(f"Created {destination}")
+                  if set(names) != set(modules) or len(names) != len(modules):
+                      raise RuntimeError(
+                          f"Unexpected ZIP contents: {destination}"
+                      )
+
+              print(f"Created {destination}")
+
+          # Raw-layer modules
+          create_zip(
+              "src/ingestion",
+              "build/raw_modules.zip",
+              [
+                  "ingest_customers.py",
+                  "ingest_products.py",
+                  "ingest_orders.py",
+                  "ingest_payments.py",
+                  "ingest_events.py",
+              ],
+          )
+
+          # Validation modules
+          create_zip(
+              "src/validation",
+              "build/validation_modules.zip",
+              [
+                  "validate_customers.py",
+                  "validate_products.py",
+                  "validate_orders.py",
+                  "validate_payments.py",
+                  "validate_events.py",
+              ],
+          )
           PY
-
+    
       # =====================================================
       # 8. UPLOAD GLUE SCRIPTS
       # =====================================================
@@ -192,7 +219,11 @@ jobs:
             build/raw_modules.zip \
             "s3://${S3_BUCKET}/scripts/raw/raw_modules.zip"
 
-          echo "Glue scripts uploaded."
+          aws s3 cp \
+            build/validation_modules.zip \
+            "s3://${S3_BUCKET}/scripts/validation_modules.zip"
+
+          echo "Glue scripts and module ZIPs uploaded."
 
       # =====================================================
       # 9. UPLOAD SOURCE CODE
