@@ -27,7 +27,11 @@ data/*.csv
 data/*.parquet
 data/*.xlsx
 data/*.zip
-
+# Large datasets stored locally and in S3
+data_s3/*.csv
+data_s3/*.parquet
+data_s3/*.xlsx
+data_s3/*.zip
 # Logs
 *.log
 

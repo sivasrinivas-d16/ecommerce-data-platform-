@@ -187,27 +187,27 @@ def provision_raw_layer_job():
         # Replace these example source keys with the actual
         # S3 source locations verified in your bucket.
         "--customers_input_path":
-            f"s3://{S3_BUCKET}/data/customers.csv",
+            f"s3://{S3_BUCKET}/data_s3/customers.csv",
         "--customers_output_path":
             f"s3://{S3_BUCKET}/raw/customers/",
 
         "--products_input_path":
-            f"s3://{S3_BUCKET}/data/products.csv",
+            f"s3://{S3_BUCKET}/data_s3/products.csv",
         "--products_output_path":
             f"s3://{S3_BUCKET}/raw/products_parquet/",
 
         "--orders_input_path":
-            f"s3://{S3_BUCKET}/data/orders.csv",
+            f"s3://{S3_BUCKET}/data_s3/orders.csv",
         "--orders_output_path":
             f"s3://{S3_BUCKET}/raw/orders/",
 
         "--payments_input_path":
-            f"s3://{S3_BUCKET}/data/payments.csv",
+            f"s3://{S3_BUCKET}/data_s3/payments.csv",
         "--payments_output_path":
             f"s3://{S3_BUCKET}/raw/payments/",
 
         "--events_input_path":
-            f"s3://{S3_BUCKET}/data/events.csv",
+            f"s3://{S3_BUCKET}/data_s3/events.csv",
         "--events_output_path":
             f"s3://{S3_BUCKET}/raw/events/",
 
