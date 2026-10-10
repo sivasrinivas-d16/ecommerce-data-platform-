@@ -1,4 +1,4 @@
-from pyspark.sql import SparkSession
+
 from pyspark.sql.types import (
     StructType,
     StructField,
@@ -6,64 +6,88 @@ from pyspark.sql.types import (
     TimestampType
 )
 
-spark = (
-    SparkSession.builder
-    .appName("ECommerceEventIngestion")
-    .master("local[2]")
-    .config("spark.driver.host", "127.0.0.1")
-    .config("spark.driver.bindAddress", "127.0.0.1")
-    .config("spark.hadoop.fs.permissions.umask-mode", "000")
-    .getOrCreate()
-)
 
-event_schema = StructType([
-    StructField("event_id", StringType(), True),
-    StructField("event_type", StringType(), True),
-    StructField("customer_id", StringType(), True),
-    StructField("order_id", StringType(), True),
-    StructField("product_id", StringType(), True),
-    StructField("event_timestamp", TimestampType(), True),
-    StructField("source", StringType(), True),
-    StructField("payload", StringType(), True)
-])
+def process_events(
+    spark,
+    input_path,
+    output_path,
+    write_mode
+):
+    """
+    Ingest event CSV data and write it to the raw layer.
 
-events_path = r".\ecommerce-data-platform\data\events.csv"
+    Parameters:
+        spark: Spark session managed by AWS Glue
+        input_path: Source CSV S3 path
+        output_path: Raw output S3 path
+        write_mode: Output write mode
+    """
 
-events_df = (
-    spark.read
-    .option("header", True)
-    .schema(event_schema)
-    .csv(events_path)
-)
+    # -----------------------------------------------------
+    # 1. Event Schema
+    # -----------------------------------------------------
 
-print("Events loaded successfully")
-print("Row count:", events_df.count())
+    event_schema = StructType([
+        StructField("event_id", StringType(), True),
+        StructField("event_type", StringType(), True),
+        StructField("customer_id", StringType(), True),
+        StructField("order_id", StringType(), True),
+        StructField("product_id", StringType(), True),
+        StructField("event_timestamp", TimestampType(), True),
+        StructField("source", StringType(), True),
+        StructField("payload", StringType(), True)
+    ])
 
-print("\nEvent Schema:")
-events_df.printSchema()
+    # -----------------------------------------------------
+    # 2. Read Event Data
+    # -----------------------------------------------------
 
-print("\nEvent Sample:")
-events_df.show(5, truncate=False)
+    events_df = (
+        spark.read
+        .option("header", True)
+        .schema(event_schema)
+        .csv(input_path)
+    )
 
-raw_events_path = r".\ecommerce-data-platform\data\raw\events"
+    print("Events loaded successfully")
+    print("Input path:", input_path)
+    print("Row count:", events_df.count())
 
-(
-    events_df.write
-    .mode("overwrite")
-    .parquet(raw_events_path)
-)
+    print("Event Schema:")
+    events_df.printSchema()
 
-print("\nEvents written successfully to Raw layer.")
+    print("Event Sample:")
+    events_df.show(5, truncate=False)
 
-raw_events_df = spark.read.parquet(raw_events_path)
+    # -----------------------------------------------------
+    # 3. Write to Raw Layer
+    # -----------------------------------------------------
 
-print("\nRaw event row count:", raw_events_df.count())
+    (
+        events_df.write
+        .mode(write_mode)
+        .format("parquet")
+        .save(output_path)
+    )
 
-print("\nRaw Event Schema:")
-raw_events_df.printSchema()
+    print("Events written successfully to raw layer")
+    print("Output path:", output_path)
 
-print("\nRaw Event Sample:")
-raw_events_df.show(5, truncate=False)
+    # -----------------------------------------------------
+    # 4. Verify Raw Output
+    # -----------------------------------------------------
 
-spark.stop()
+    raw_events_df = spark.read.parquet(output_path)
 
+    print(
+        "Raw event row count:",
+        raw_events_df.count()
+    )
+
+    print("Raw Event Schema:")
+    raw_events_df.printSchema()
+
+    print("Raw Event Sample:")
+    raw_events_df.show(5, truncate=False)
+
+    print("Events raw ingestion completed")

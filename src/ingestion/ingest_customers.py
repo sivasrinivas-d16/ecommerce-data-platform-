@@ -1,4 +1,4 @@
-from pyspark.sql import SparkSession
+
 from pyspark.sql.types import (
     StructType,
     StructField,
@@ -7,124 +7,93 @@ from pyspark.sql.types import (
 from pyspark.sql.functions import col, to_date
 
 
-# ---------------------------------------------------------
-# Spark Session
-# ---------------------------------------------------------
+def process_customers(
+    spark,
+    input_path,
+    output_path,
+    write_mode
+):
+    """
+    Ingest customer CSV data and write it to the raw layer.
 
-spark = (
-    SparkSession.builder
-    .appName("ECommerceCustomerIngestion")
-    .master("local[2]")
-    .config("spark.driver.host", "127.0.0.1")
-    .config("spark.driver.bindAddress", "127.0.0.1")
-    .config("spark.hadoop.fs.permissions.umask-mode", "000")
-    .getOrCreate()
-)
+    Parameters:
+        spark: Spark session managed by AWS Glue
+        input_path: Source CSV S3 path
+        output_path: Raw output S3 path
+        write_mode: Output write mode
+    """
 
+    # -----------------------------------------------------
+    # 1. Customer Schema
+    # -----------------------------------------------------
 
-# ---------------------------------------------------------
-# Customer Schema
-# ---------------------------------------------------------
+    customer_schema = StructType([
+        StructField("customer_id", StringType(), True),
+        StructField("name", StringType(), True),
+        StructField("email", StringType(), True),
+        StructField("city", StringType(), True),
+        StructField("state", StringType(), True),
+        StructField("country", StringType(), True),
+        StructField("signup_date", StringType(), True)
+    ])
 
-customer_schema = StructType([
-    StructField("customer_id", StringType(), True),
-    StructField("name", StringType(), True),
-    StructField("email", StringType(), True),
-    StructField("city", StringType(), True),
-    StructField("state", StringType(), True),
-    StructField("country", StringType(), True),
-    StructField("signup_date", StringType(), True)
-])
+    # -----------------------------------------------------
+    # 2. Read Customer Data
+    # -----------------------------------------------------
 
+    customers_df = (
+        spark.read
+        .option("header", True)
+        .schema(customer_schema)
+        .csv(input_path)
+    )
 
-# ---------------------------------------------------------
-# Source Path
-# ---------------------------------------------------------
+    print("Customers loaded successfully")
+    print("Input path:", input_path)
+    print("Row count:", customers_df.count())
 
-customers_path = r".\ecommerce-data-platform\data\customers.csv"
+    customers_df.printSchema()
+    customers_df.show(5, truncate=False)
 
+    # -----------------------------------------------------
+    # 3. Convert signup_date
+    # -----------------------------------------------------
 
-# ---------------------------------------------------------
-# Read Customer Data
-# ---------------------------------------------------------
+    customers_df = customers_df.withColumn(
+        "signup_date",
+        to_date(col("signup_date"), "dd-MM-yyyy")
+    )
 
-customers_df = (
-    spark.read
-    .option("header", True)
-    .schema(customer_schema)
-    .csv(customers_path)
-)
+    print("Customer signup_date conversion completed")
+    customers_df.printSchema()
+    customers_df.show(5, truncate=False)
 
-print("Customers loaded successfully")
-print("Row count:", customers_df.count())
+    # -----------------------------------------------------
+    # 4. Write to Raw Layer
+    # -----------------------------------------------------
 
-print("\nSource Schema:")
-customers_df.printSchema()
+    (
+        customers_df.write
+        .mode(write_mode)
+        .format("parquet")
+        .save(output_path)
+    )
 
-print("\nSource Data:")
-customers_df.show(5, truncate=False)
+    print("Customers written successfully to raw layer")
+    print("Output path:", output_path)
 
+    # -----------------------------------------------------
+    # 5. Verify Raw Output
+    # -----------------------------------------------------
 
-# ---------------------------------------------------------
-# Convert signup_date
-# Source format: DD-MM-YYYY
-# Target type: DateType
-# ---------------------------------------------------------
+    raw_customers_df = spark.read.parquet(output_path)
 
-customers_df = customers_df.withColumn(
-    "signup_date",
-    to_date(col("signup_date"), "dd-MM-yyyy")
-)
+    print(
+        "Raw customer row count:",
+        raw_customers_df.count()
+    )
 
+    raw_customers_df.printSchema()
+    raw_customers_df.show(5, truncate=False)
 
-# ---------------------------------------------------------
-# Verify Date Conversion
-# ---------------------------------------------------------
-
-print("\nSchema After Date Conversion:")
-customers_df.printSchema()
-
-print("\nData After Date Conversion:")
-customers_df.show(5, truncate=False)
-
-
-# ---------------------------------------------------------
-# Raw Layer Path
-# ---------------------------------------------------------
-
-raw_customers_path = r".\ecommerce-data-platform\data\raw\customers"
-
-
-# ---------------------------------------------------------
-# Write Customers to Raw Layer
-# ---------------------------------------------------------
-
-(
-    customers_df.write
-    .mode("overwrite")
-    .parquet(raw_customers_path)
-)
-
-print("\nCustomers written successfully to Raw layer.")
-
-
-# ---------------------------------------------------------
-# Verify Raw Layer
-# ---------------------------------------------------------
-
-raw_customers_df = spark.read.parquet(raw_customers_path)
-
-print("\nRaw customer row count:", raw_customers_df.count())
-
-print("\nRaw Customer Schema:")
-raw_customers_df.printSchema()
-
-print("\nRaw Customer Sample:")
-raw_customers_df.show(5, truncate=False)
-
-
-# ---------------------------------------------------------
-# Stop Spark
-# ---------------------------------------------------------
-
-spark.stop()
+    print("Customers raw ingestion completed")

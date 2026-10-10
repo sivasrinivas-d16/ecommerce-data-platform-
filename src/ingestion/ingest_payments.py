@@ -1,4 +1,4 @@
-from pyspark.sql import SparkSession
+
 from pyspark.sql.types import (
     StructType,
     StructField,
@@ -8,24 +8,9 @@ from pyspark.sql.types import (
 )
 
 
-# ---------------------------------------------------------
-# Spark Session
-# ---------------------------------------------------------
-
-spark = (
-    SparkSession.builder
-    .appName("ECommercePaymentIngestion")
-    .master("local[2]")
-    .config("spark.driver.host", "127.0.0.1")
-    .config("spark.driver.bindAddress", "127.0.0.1")
-    .config("spark.hadoop.fs.permissions.umask-mode", "000")
-    .getOrCreate()
-)
-
-
-# ---------------------------------------------------------
-# Payment Schema
-# ---------------------------------------------------------
+# ============================================================
+# 1. Define Payment Schema
+# ============================================================
 
 payment_schema = StructType([
     StructField("payment_id", StringType(), True),
@@ -39,53 +24,87 @@ payment_schema = StructType([
 ])
 
 
-# ---------------------------------------------------------
-# Source Path
-# ---------------------------------------------------------
+# ============================================================
+# 2. Reusable Payments Ingestion Function
+# ============================================================
 
-payments_path = r".\ecommerce-data-platform\data\payments.csv"
+def process_payments(
+    spark,
+    input_path,
+    output_path,
+    write_mode
+):
+    """
+    Read Payments CSV and write it to the S3 raw layer.
 
+    Parameters:
+        spark: Spark session managed by AWS Glue
+        input_path: Source CSV S3 path
+        output_path: Raw output S3 path
+        write_mode: Output write mode
+    """
 
-# ---------------------------------------------------------
-# Read Payment Data
-# ---------------------------------------------------------
+    # --------------------------------------------------------
+    # 3. Read Payment Data
+    # --------------------------------------------------------
 
-payments_df = (
-    spark.read
-    .option("header", True)
-    .schema(payment_schema)
-    .csv(payments_path)
-)
+    payments_df = (
+        spark.read
+        .option("header", True)
+        .schema(payment_schema)
+        .csv(input_path)
+    )
 
-print("Payments loaded successfully")
-print("Row count:", payments_df.count())
+    print("Payments loaded successfully")
+    print("Input path:", input_path)
 
-print("\nPayment Schema:")
-payments_df.printSchema()
+    row_count = payments_df.count()
+    print("Payments row count:", row_count)
 
-print("\nPayment Sample:")
-payments_df.show(5, truncate=False)
+    # --------------------------------------------------------
+    # 4. Display Schema and Sample
+    # --------------------------------------------------------
 
-raw_payments_path = r".\ecommerce-data-platform\data\raw\payments"
+    print("Payment Schema:")
+    payments_df.printSchema()
 
-(
-    payments_df.write
-    .mode("overwrite")
-    .parquet(raw_payments_path)
-)
+    print("Payment Sample:")
+    payments_df.show(5, truncate=False)
 
-print("\nPayments written successfully to Raw layer.")
+    # --------------------------------------------------------
+    # 5. Write to Raw Layer
+    # --------------------------------------------------------
 
-raw_payments_df = spark.read.parquet(raw_payments_path)
+    (
+        payments_df.write
+        .mode(write_mode)
+        .format("parquet")
+        .save(output_path)
+    )
 
-print("\nRaw payment row count:", raw_payments_df.count())
+    print("Payments written successfully to raw layer")
+    print("Output path:", output_path)
 
-print("\nRaw Payment Schema:")
-raw_payments_df.printSchema()
+    # --------------------------------------------------------
+    # 6. Verify Raw Layer
+    # --------------------------------------------------------
 
-print("\nRaw Payment Sample:")
-raw_payments_df.show(5, truncate=False)
+    raw_payments_df = spark.read.parquet(output_path)
 
-spark.stop()
+    raw_count = raw_payments_df.count()
 
+    print("Raw payment row count:", raw_count)
 
+    print("Raw Payment Schema:")
+    raw_payments_df.printSchema()
+
+    print("Raw Payment Sample:")
+    raw_payments_df.show(5, truncate=False)
+
+    if raw_count != row_count:
+        raise RuntimeError(
+            "Payments row-count verification failed: "
+            f"source={row_count}, raw={raw_count}"
+        )
+
+    print("Payments raw ingestion completed successfully")
