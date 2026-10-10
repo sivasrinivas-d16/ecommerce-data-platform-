@@ -447,7 +447,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python lambda_deployment.py --source lambda_code/validation_gate.py
+          python src/utils/lambda_deployment.py --source lambda_code/validation_gate.py
 
       
 
