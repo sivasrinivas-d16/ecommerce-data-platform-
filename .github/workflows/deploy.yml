@@ -228,8 +228,8 @@ jobs:
             --region "${AWS_REGION}"
 
           aws s3 cp \
-            src/validation/validation_main.py \
-            "s3://${S3_BUCKET}/code/src/validation/validation_main.py" \
+            glue_jobs/validation_layer_main.py \
+            "s3://${S3_BUCKET}/scripts/validation_main.py" \
             --region "${AWS_REGION}"
 
           echo "Glue scripts and module ZIPs uploaded successfully."
