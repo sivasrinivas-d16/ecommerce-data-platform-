@@ -317,7 +317,7 @@ jobs:
 
           aws s3api head-object \
             --bucket "${S3_BUCKET}" \
-            --key code/src/validation/validation_main.py \
+            --key scripts/validation_main.py \
             --region "${AWS_REGION}"
 
           echo "Verifying validation modules ZIP..."
