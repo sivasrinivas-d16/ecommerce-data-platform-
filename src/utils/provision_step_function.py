@@ -1,7 +1,7 @@
+
 import json
 import boto3
 from botocore.exceptions import ClientError
-
 
 # =========================================================
 # 1. CONFIGURATION
@@ -17,6 +17,7 @@ STEP_FUNCTION_ROLE = (
     "role/StepFunctions-EcommerceRole"
 )
 
+SOURCE_GENERATION_GLUE_JOB = "ecommerce_generate_source_data"
 RAW_LAYER_GLUE_JOB = "ecommerce_raw_layer"
 
 
@@ -26,17 +27,34 @@ RAW_LAYER_GLUE_JOB = "ecommerce_raw_layer"
 
 STATE_MACHINE_DEFINITION = {
     "Comment": (
-        "E-Commerce Raw Layer Pipeline - "
-        "Customers, Products, Orders, Payments and Events"
+        "E-Commerce Source Generation and Raw Layer Pipeline"
     ),
-    "StartAt": "Run Raw Layer",
+    "StartAt": "Generate Source Data",
     "States": {
+        "Generate Source Data": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::glue:startJobRun.sync",
+            "Parameters": {
+                "JobName": SOURCE_GENERATION_GLUE_JOB
+            },
+            "ResultPath": "$.source_generation",
+            "Catch": [
+                {
+                    "ErrorEquals": ["States.ALL"],
+                    "ResultPath": "$.error",
+                    "Next": "Source Generation Failed"
+                }
+            ],
+            "Next": "Run Raw Layer"
+        },
+
         "Run Raw Layer": {
             "Type": "Task",
             "Resource": "arn:aws:states:::glue:startJobRun.sync",
             "Parameters": {
                 "JobName": RAW_LAYER_GLUE_JOB
             },
+            "ResultPath": "$.raw_layer",
             "Catch": [
                 {
                     "ErrorEquals": ["States.ALL"],
@@ -44,17 +62,28 @@ STATE_MACHINE_DEFINITION = {
                     "Next": "Raw Layer Failed"
                 }
             ],
-            "Next": "Raw Layer Completed"
+            "Next": "Pipeline Completed"
         },
-        "Raw Layer Completed": {
+
+        "Pipeline Completed": {
             "Type": "Succeed"
         },
+
+        "Source Generation Failed": {
+            "Type": "Fail",
+            "Error": "SourceGenerationFailed",
+            "Cause": (
+                "Source dataset generation failed. "
+                "Check AWS Glue and CloudWatch logs."
+            )
+        },
+
         "Raw Layer Failed": {
             "Type": "Fail",
             "Error": "RawLayerExecutionFailed",
             "Cause": (
-                "The combined raw-layer Glue job failed. "
-                "Check the Glue and CloudWatch logs."
+                "Raw-layer ingestion failed. "
+                "Check AWS Glue and CloudWatch logs."
             )
         }
     }
@@ -62,32 +91,31 @@ STATE_MACHINE_DEFINITION = {
 
 
 # =========================================================
-# 3. VERIFY GLUE JOB
+# 3. VERIFY REQUIRED GLUE JOBS
 # =========================================================
 
-def verify_glue_job(glue_client):
-    try:
-        response = glue_client.get_job(
-            JobName=RAW_LAYER_GLUE_JOB
-        )
+def verify_glue_jobs(glue_client):
+    for job_name in [
+        SOURCE_GENERATION_GLUE_JOB,
+        RAW_LAYER_GLUE_JOB
+    ]:
+        try:
+            response = glue_client.get_job(JobName=job_name)
+            job = response["Job"]
 
-        job = response["Job"]
-        script_location = job["Command"]["ScriptLocation"]
-
-        print(f"Glue job found: {RAW_LAYER_GLUE_JOB}")
-        print(f"Script location: {script_location}")
-
-        if not script_location:
-            raise RuntimeError(
-                "The Glue job has no configured script location."
+            print(f"Glue job found: {job_name}")
+            print(
+                "Script location:",
+                job["Command"]["ScriptLocation"]
             )
 
-    except glue_client.exceptions.EntityNotFoundException as exc:
-        raise RuntimeError(
-            f"Glue job '{RAW_LAYER_GLUE_JOB}' does not exist "
-            f"in AWS region {AWS_REGION}. "
-            "Run the Glue job provisioning script first."
-        ) from exc
+        except glue_client.exceptions.EntityNotFoundException as exc:
+            raise RuntimeError(
+                f"Required Glue job '{job_name}' does not exist "
+                f"in region {AWS_REGION}. "
+                "Provision both Glue jobs before deploying "
+                "the state machine."
+            ) from exc
 
 
 # =========================================================
@@ -95,7 +123,6 @@ def verify_glue_job(glue_client):
 # =========================================================
 
 def provision_state_machine(sfn_client):
-
     definition = json.dumps(STATE_MACHINE_DEFINITION)
 
     existing_state_machine = None
@@ -144,29 +171,28 @@ def provision_state_machine(sfn_client):
 # =========================================================
 
 def main():
-
     print("=" * 70)
-    print("STEP FUNCTIONS DEPLOYMENT")
+    print("SOURCE GENERATION + RAW LAYER DEPLOYMENT")
     print("=" * 70)
 
     print("AWS Region:", AWS_REGION)
     print("State Machine:", STATE_MACHINE_NAME)
-    print("Glue Job:", RAW_LAYER_GLUE_JOB)
+    print("Source Generation Job:", SOURCE_GENERATION_GLUE_JOB)
+    print("Raw Layer Job:", RAW_LAYER_GLUE_JOB)
 
     session = boto3.Session(region_name=AWS_REGION)
 
     glue_client = session.client("glue")
     sfn_client = session.client("stepfunctions")
 
-    # Confirm the Glue job exists before deploying its orchestrator.
-    verify_glue_job(glue_client)
+    # Both jobs must exist before the state machine is deployed.
+    verify_glue_jobs(glue_client)
 
     state_machine_arn = provision_state_machine(sfn_client)
 
     print("State Machine ARN:", state_machine_arn)
-
     print("=" * 70)
-    print("STEP FUNCTIONS DEPLOYMENT COMPLETED")
+    print("DEPLOYMENT COMPLETED")
     print("=" * 70)
 
 

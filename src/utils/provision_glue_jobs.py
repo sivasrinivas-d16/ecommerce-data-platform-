@@ -1,5 +1,6 @@
-import boto3
 
+import boto3
+from botocore.exceptions import ClientError
 
 # ============================================================
 # 1. AWS CONFIGURATION
@@ -8,63 +9,64 @@ import boto3
 AWS_REGION = "ap-southeast-2"
 
 GLUE_ROLE_ARN = (
-   "arn:aws:iam::256130491261:role/service-role/AWSGlueServiceRole-ecommerce"
+    "arn:aws:iam::256130491261:"
+    "role/service-role/AWSGlueServiceRole-ecommerce"
 )
 
 S3_BUCKET = "ecommerce-data-platform-version1"
 
+# ============================================================
+# 2. SOURCE GENERATION JOB
+# ============================================================
+
+SOURCE_GENERATION_JOB = "ecommerce_generate_source_data"
+
+SOURCE_GENERATION_SCRIPT = (
+    f"s3://{S3_BUCKET}/scripts/generate_source_data.py"
+)
 
 # ============================================================
-# 2. CUSTOMERS SCRIPTS
+# 3. EXISTING CUSTOMERS JOBS
 # ============================================================
 
 CUSTOMERS_ETL_SCRIPT = (
-    f"s3://{S3_BUCKET}/"
-    "code/src/ingestion/glue_customers_etl.py"
+    f"s3://{S3_BUCKET}/code/src/ingestion/glue_customers_etl.py"
 )
 
 CUSTOMERS_VALIDATION_QUALITY_SCRIPT = (
-    f"s3://{S3_BUCKET}/"
-    "code/src/validation_quality/"
+    f"s3://{S3_BUCKET}/code/src/validation_quality/"
     "glue_customers_validation_quality.py"
 )
 
 CUSTOMERS_TRANSFORMATION_SCRIPT = (
-    f"s3://{S3_BUCKET}/"
-    "code/src/transformation/"
+    f"s3://{S3_BUCKET}/code/src/transformation/"
     "transform_customers.py"
 )
 
-
 # ============================================================
-# 3. PRODUCTS SCRIPT
+# 4. EXISTING PRODUCTS JOB
 # ============================================================
 
 PRODUCTS_ETL_SCRIPT = (
-    f"s3://{S3_BUCKET}/"
-    "code/src/ingestion/ingest_products.py"
+    f"s3://{S3_BUCKET}/code/src/ingestion/ingest_products.py"
 )
 
-
 # ============================================================
-# 4. COMBINED RAW-LAYER SCRIPT AND MODULES
+# 5. RAW-LAYER JOB
 # ============================================================
 
 RAW_LAYER_JOB = "ecommerce_raw_layer"
 
 RAW_LAYER_SCRIPT = (
-    f"s3://{S3_BUCKET}/"
-    "scripts/raw/raw_layer_main.py"
+    f"s3://{S3_BUCKET}/scripts/raw/raw_layer_main.py"
 )
 
 RAW_LAYER_MODULES = (
-    f"s3://{S3_BUCKET}/"
-    "scripts/raw/raw_modules.zip"
+    f"s3://{S3_BUCKET}/scripts/raw/raw_modules.zip"
 )
 
-
 # ============================================================
-# 5. GLUE CLIENT
+# 6. GLUE CLIENT
 # ============================================================
 
 glue_client = boto3.client(
@@ -72,9 +74,8 @@ glue_client = boto3.client(
     region_name=AWS_REGION
 )
 
-
 # ============================================================
-# 6. COMMON CONFIGURATION
+# 7. COMMON CONFIGURATION
 # ============================================================
 
 def get_job_command(script_location):
@@ -94,14 +95,21 @@ def get_job_arguments():
     }
 
 
-def create_or_update_job(job_name, script_location, extra_arguments=None):
+def create_or_update_job(
+    job_name,
+    script_location,
+    extra_arguments=None,
+    worker_type="G.1X",
+    number_of_workers=2,
+    timeout=60
+):
     job_config = {
         "Role": GLUE_ROLE_ARN,
         "Command": get_job_command(script_location),
         "GlueVersion": "5.1",
-        "WorkerType": "G.1X",
-        "NumberOfWorkers": 2,
-        "Timeout": 15,
+        "WorkerType": worker_type,
+        "NumberOfWorkers": number_of_workers,
+        "Timeout": timeout,
         "MaxRetries": 0,
         "ExecutionProperty": {
             "MaxConcurrentRuns": 1
@@ -132,7 +140,21 @@ def create_or_update_job(job_name, script_location, extra_arguments=None):
 
 
 # ============================================================
-# 7. CUSTOMERS ETL
+# 8. SOURCE DATA GENERATION
+# ============================================================
+
+def provision_source_generation_job():
+    create_or_update_job(
+        job_name=SOURCE_GENERATION_JOB,
+        script_location=SOURCE_GENERATION_SCRIPT,
+        worker_type="G.1X",
+        number_of_workers=5,
+        timeout=180
+    )
+
+
+# ============================================================
+# 9. CUSTOMERS ETL
 # ============================================================
 
 def provision_customers_etl_job():
@@ -143,7 +165,7 @@ def provision_customers_etl_job():
 
 
 # ============================================================
-# 8. CUSTOMERS VALIDATION + QUALITY
+# 10. CUSTOMERS VALIDATION + QUALITY
 # ============================================================
 
 def provision_customers_validation_quality_job():
@@ -154,7 +176,7 @@ def provision_customers_validation_quality_job():
 
 
 # ============================================================
-# 9. CUSTOMERS TRANSFORMATION
+# 11. CUSTOMERS TRANSFORMATION
 # ============================================================
 
 def provision_customers_transformation_job():
@@ -165,7 +187,7 @@ def provision_customers_transformation_job():
 
 
 # ============================================================
-# 10. PRODUCTS ETL
+# 12. PRODUCTS ETL
 # ============================================================
 
 def provision_products_etl_job():
@@ -176,38 +198,35 @@ def provision_products_etl_job():
 
 
 # ============================================================
-# 11. COMBINED RAW-LAYER JOB
+# 13. COMBINED RAW-LAYER JOB
 # ============================================================
 
 def provision_raw_layer_job():
-
     raw_layer_arguments = {
         "--extra-py-files": RAW_LAYER_MODULES,
 
-        # Replace these example source keys with the actual
-        # S3 source locations verified in your bucket.
         "--customers_input_path":
-            f"s3://{S3_BUCKET}/data_s3/customers.csv",
+            f"s3://{S3_BUCKET}/data/customers.csv/",
         "--customers_output_path":
             f"s3://{S3_BUCKET}/raw/customers/",
 
         "--products_input_path":
-            f"s3://{S3_BUCKET}/data_s3/products.csv",
+            f"s3://{S3_BUCKET}/data/products.csv/",
         "--products_output_path":
-            f"s3://{S3_BUCKET}/raw/products_parquet/",
+            f"s3://{S3_BUCKET}/raw/products/",
 
         "--orders_input_path":
-            f"s3://{S3_BUCKET}/data_s3/orders.csv",
+            f"s3://{S3_BUCKET}/data/orders.csv/",
         "--orders_output_path":
             f"s3://{S3_BUCKET}/raw/orders/",
 
         "--payments_input_path":
-            f"s3://{S3_BUCKET}/data_s3/payments.csv",
+            f"s3://{S3_BUCKET}/data/payments.csv/",
         "--payments_output_path":
             f"s3://{S3_BUCKET}/raw/payments/",
 
         "--events_input_path":
-            f"s3://{S3_BUCKET}/data_s3/events.csv",
+            f"s3://{S3_BUCKET}/data/events.csv/",
         "--events_output_path":
             f"s3://{S3_BUCKET}/raw/events/",
 
@@ -217,26 +236,31 @@ def provision_raw_layer_job():
     create_or_update_job(
         job_name=RAW_LAYER_JOB,
         script_location=RAW_LAYER_SCRIPT,
-        extra_arguments=raw_layer_arguments
+        extra_arguments=raw_layer_arguments,
+        worker_type="G.1X",
+        number_of_workers=5,
+        timeout=180
     )
 
 
 # ============================================================
-# 12. MAIN
+# 14. MAIN
 # ============================================================
 
 def main():
-
     print("=" * 70)
     print("STARTING GLUE JOB PROVISIONING")
     print("=" * 70)
+
+    print("\nProvisioning source-generation job...")
+    provision_source_generation_job()
 
     print("\nProvisioning Customers jobs...")
     provision_customers_etl_job()
     provision_customers_validation_quality_job()
     provision_customers_transformation_job()
 
-    print("\nProvisioning Products jobs...")
+    print("\nProvisioning Products job...")
     provision_products_etl_job()
 
     print("\nProvisioning combined raw-layer job...")

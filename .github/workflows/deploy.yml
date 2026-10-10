@@ -1,3 +1,4 @@
+
 name: Deploy E-Commerce Data Platform
 
 on:
@@ -17,22 +18,27 @@ env:
   AWS_REGION: ap-southeast-2
   S3_BUCKET: ecommerce-data-platform-version1
   RAW_LAYER_STATE_MACHINE: ecommerce-raw-layer-pipeline
+  SOURCE_GENERATION_GLUE_JOB: ecommerce_generate_source_data
+  RAW_LAYER_GLUE_JOB: ecommerce_raw_layer
 
 jobs:
   deploy:
-    name: Upload Data, Deploy and Run Pipeline
+    name: Deploy and Run E-Commerce Pipeline
     runs-on: ubuntu-latest
+    timeout-minutes: 360
 
     steps:
       # =====================================================
       # 1. CHECKOUT REPOSITORY
       # =====================================================
+
       - name: Checkout repository
         uses: actions/checkout@v5
 
       # =====================================================
       # 2. SET UP PYTHON
       # =====================================================
+
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -48,6 +54,7 @@ jobs:
       # =====================================================
       # 3. CONFIGURE AWS CREDENTIALS
       # =====================================================
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
@@ -58,6 +65,7 @@ jobs:
       # =====================================================
       # 4. VERIFY AWS IDENTITY
       # =====================================================
+
       - name: Verify AWS identity
         shell: bash
         run: |
@@ -65,82 +73,25 @@ jobs:
           aws sts get-caller-identity
 
       # =====================================================
-      # 5. VALIDATE LOCAL DATASET DIRECTORY
+      # 5. VALIDATE DEPLOYMENT FILES
       # =====================================================
-      - name: Validate source datasets
-        shell: bash
-        run: |
-          set -euo pipefail
 
-          if [[ ! -d "data_s3" ]]; then
-            echo "ERROR: data_s3 directory is missing."
-            exit 1
-          fi
-
-          required_data=(
-            "data_s3/customers.csv"
-            "data_s3/products.csv"
-            "data_s3/orders.csv"
-            "data_s3/payments.csv"
-            "data_s3/events.csv"
-          )
-
-          for file in "${required_data[@]}"; do
-            if [[ ! -f "$file" ]]; then
-              echo "ERROR: Required dataset missing: $file"
-              exit 1
-            fi
-          done
-
-          echo "All five source datasets are available."
-
-      # =====================================================
-      # 6. UPLOAD SOURCE DATASETS TO S3
-      # =====================================================
-      - name: Upload source datasets to S3
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "Uploading CSV datasets to S3..."
-
-          aws s3 sync data_s3/ \
-            "s3://${S3_BUCKET}/data_s3/" \
-            --exclude "*" \
-            --include "*.csv"
-
-          echo "Verifying uploaded objects..."
-
-          for file in customers.csv products.csv orders.csv payments.csv events.csv; do
-            aws s3api head-object \
-              --bucket "${S3_BUCKET}" \
-              --key "data_s3/${file}" \
-              --query '{ContentLength:ContentLength,LastModified:LastModified}' \
-              --output json
-
-            echo "Verified: ${file}"
-          done
-
-          echo "All source datasets uploaded and verified."
-
-      # =====================================================
-      # 7. VALIDATE REQUIRED DEPLOYMENT FILES
-      # =====================================================
       - name: Validate deployment files
         shell: bash
         run: |
           set -euo pipefail
 
           required_files=(
+            "glue_jobs/generate_source_data.py"
             "glue_jobs/raw_layer_main.py"
             "src/ingestion/ingest_customers.py"
             "src/ingestion/ingest_products.py"
             "src/ingestion/ingest_orders.py"
             "src/ingestion/ingest_payments.py"
             "src/ingestion/ingest_events.py"
-            "src/utils/register_glue_tables.py"
             "src/utils/provision_glue_jobs.py"
             "src/utils/provision_step_function.py"
+            "src/utils/register_glue_tables.py"
           )
 
           for file in "${required_files[@]}"; do
@@ -153,8 +104,32 @@ jobs:
           echo "All required deployment files exist."
 
       # =====================================================
-      # 8. PACKAGE RAW-LAYER MODULES
+      # 6. CHECK PYTHON SYNTAX
       # =====================================================
+
+      - name: Check Python syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m py_compile \
+            glue_jobs/generate_source_data.py \
+            glue_jobs/raw_layer_main.py \
+            src/ingestion/ingest_customers.py \
+            src/ingestion/ingest_products.py \
+            src/ingestion/ingest_orders.py \
+            src/ingestion/ingest_payments.py \
+            src/ingestion/ingest_events.py \
+            src/utils/provision_glue_jobs.py \
+            src/utils/provision_step_function.py \
+            src/utils/register_glue_tables.py
+
+          echo "Python syntax checks passed."
+
+      # =====================================================
+      # 7. PACKAGE RAW-LAYER MODULES
+      # =====================================================
+
       - name: Package raw-layer modules
         shell: bash
         run: |
@@ -188,9 +163,7 @@ jobs:
 
           with ZipFile(destination) as archive:
               names = archive.namelist()
-              print("ZIP contents:")
-              for name in names:
-                  print(f" - {name}")
+              print("ZIP contents:", names)
 
               if set(names) != set(modules) or len(names) != len(modules):
                   raise RuntimeError("Unexpected raw-layer ZIP contents.")
@@ -199,12 +172,17 @@ jobs:
           PY
 
       # =====================================================
-      # 9. UPLOAD RAW-LAYER GLUE SCRIPT AND MODULES
+      # 8. UPLOAD GLUE SCRIPTS
       # =====================================================
-      - name: Upload raw-layer scripts
+
+      - name: Upload Glue scripts
         shell: bash
         run: |
           set -euo pipefail
+
+          aws s3 cp \
+            glue_jobs/generate_source_data.py \
+            "s3://${S3_BUCKET}/scripts/generate_source_data.py"
 
           aws s3 cp \
             glue_jobs/raw_layer_main.py \
@@ -214,21 +192,27 @@ jobs:
             build/raw_modules.zip \
             "s3://${S3_BUCKET}/scripts/raw/raw_modules.zip"
 
+          echo "Glue scripts uploaded."
+
       # =====================================================
-      # 10. UPLOAD SOURCE CODE
+      # 9. UPLOAD SOURCE CODE
       # =====================================================
+
       - name: Upload source code
         shell: bash
         run: |
           set -euo pipefail
 
           aws s3 sync src/ \
-            "s3://${S3_BUCKET}/code/src/"
+            "s3://${S3_BUCKET}/code/src/" \
+            --exclude "__pycache__/*" \
+            --exclude "*.pyc"
 
       # =====================================================
-      # 11. UPLOAD SCHEMAS
+      # 10. UPLOAD SCHEMAS AND DOCUMENTATION
       # =====================================================
-      - name: Upload schemas
+
+      - name: Upload schemas and documentation
         shell: bash
         run: |
           set -euo pipefail
@@ -236,32 +220,25 @@ jobs:
           if [[ -d "schemas" ]]; then
             aws s3 sync schemas/ \
               "s3://${S3_BUCKET}/code/schemas/"
-          else
-            echo "Schemas directory not found; skipping."
           fi
-
-      # =====================================================
-      # 12. UPLOAD DOCUMENTATION
-      # =====================================================
-      - name: Upload documentation
-        shell: bash
-        run: |
-          set -euo pipefail
 
           if [[ -d "docs" ]]; then
             aws s3 sync docs/ \
               "s3://${S3_BUCKET}/code/docs/"
-          else
-            echo "Docs directory not found; skipping."
           fi
 
       # =====================================================
-      # 13. VERIFY RAW-LAYER S3 OBJECTS
+      # 11. VERIFY SCRIPT OBJECTS
       # =====================================================
-      - name: Verify raw-layer S3 objects
+
+      - name: Verify uploaded scripts
         shell: bash
         run: |
           set -euo pipefail
+
+          aws s3api head-object \
+            --bucket "${S3_BUCKET}" \
+            --key scripts/generate_source_data.py
 
           aws s3api head-object \
             --bucket "${S3_BUCKET}" \
@@ -271,53 +248,65 @@ jobs:
             --bucket "${S3_BUCKET}" \
             --key scripts/raw/raw_modules.zip
 
-          echo "Raw-layer script and module ZIP verified."
+          echo "Uploaded script objects verified."
 
       # =====================================================
-      # 14. REGISTER GLUE CATALOG TABLES
+      # 12. PROVISION BOTH GLUE JOBS
       # =====================================================
-      - name: Register Glue Catalog tables
-        shell: bash
-        run: |
-          set -euo pipefail
-          python src/utils/register_glue_tables.py
 
-      # =====================================================
-      # 15. PROVISION / UPDATE GLUE JOBS
-      # =====================================================
       - name: Provision Glue jobs
         shell: bash
         run: |
           set -euo pipefail
+
           python src/utils/provision_glue_jobs.py
 
       # =====================================================
-      # 16. VERIFY RAW-LAYER GLUE JOB
+      # 13. VERIFY SOURCE GENERATION JOB
       # =====================================================
+
+      - name: Verify source generation Glue job
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          aws glue get-job \
+            --job-name "${SOURCE_GENERATION_GLUE_JOB}" \
+            --region "${AWS_REGION}" \
+            --query 'Job.{Name:Name,Role:Role,Script:Command.ScriptLocation,Version:GlueVersion}' \
+            --output json
+
+      # =====================================================
+      # 14. VERIFY RAW-LAYER GLUE JOB
+      # =====================================================
+
       - name: Verify raw-layer Glue job
         shell: bash
         run: |
           set -euo pipefail
 
           aws glue get-job \
-            --job-name ecommerce_raw_layer \
+            --job-name "${RAW_LAYER_GLUE_JOB}" \
             --region "${AWS_REGION}" \
-            --query 'Job.{Name:Name,Role:Role,Script:Command.ScriptLocation,Version:GlueVersion,Arguments:DefaultArguments}' \
+            --query 'Job.{Name:Name,Role:Role,Script:Command.ScriptLocation,Version:GlueVersion}' \
             --output json
 
       # =====================================================
-      # 17. DEPLOY / UPDATE STEP FUNCTIONS
+      # 15. DEPLOY STEP FUNCTIONS
       # =====================================================
+
       - name: Deploy Step Functions
         shell: bash
         run: |
           set -euo pipefail
+
           python src/utils/provision_step_function.py
 
       # =====================================================
-      # 18. VERIFY STATE MACHINE
+      # 16. VERIFY STATE MACHINE
       # =====================================================
-      - name: Verify raw-layer state machine
+
+      - name: Verify state machine
         shell: bash
         run: |
           set -euo pipefail
@@ -331,14 +320,15 @@ jobs:
           aws stepfunctions describe-state-machine \
             --state-machine-arn "${STATE_MACHINE_ARN}" \
             --region "${AWS_REGION}" \
-            --query '{name:name,status:status,arn:stateMachineArn}' \
+            --query '{name:name,status:status,arn:stateMachineArn,definition:definition}' \
             --output json
 
           echo "STATE_MACHINE_ARN=${STATE_MACHINE_ARN}" >> "$GITHUB_ENV"
 
       # =====================================================
-      # 19. START RAW-LAYER EXECUTION
+      # 17. START THE PIPELINE
       # =====================================================
+
       - name: Start raw-layer pipeline
         shell: bash
         run: |
@@ -346,10 +336,67 @@ jobs:
 
           EXECUTION_NAME="raw-layer-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
-          aws stepfunctions start-execution \
+          EXECUTION_ARN=$(aws stepfunctions start-execution \
             --state-machine-arn "${STATE_MACHINE_ARN}" \
             --name "${EXECUTION_NAME}" \
             --input '{}' \
-            --region "${AWS_REGION}"
+            --region "${AWS_REGION}" \
+            --query executionArn \
+            --output text)
 
-          echo "Started execution: ${EXECUTION_NAME}"
+          echo "EXECUTION_ARN=${EXECUTION_ARN}" >> "$GITHUB_ENV"
+          echo "Started execution: ${EXECUTION_ARN}"
+
+      # =====================================================
+      # 18. WAIT FOR PIPELINE COMPLETION
+      # =====================================================
+
+      - name: Wait for pipeline completion
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          while true; do
+            STATUS=$(aws stepfunctions describe-execution \
+              --execution-arn "${EXECUTION_ARN}" \
+              --region "${AWS_REGION}" \
+              --query status \
+              --output text)
+
+            echo "Pipeline status: ${STATUS}"
+
+            case "${STATUS}" in
+              SUCCEEDED)
+                echo "Source generation and raw ingestion succeeded."
+                break
+                ;;
+              FAILED|TIMED_OUT|ABORTED)
+                aws stepfunctions describe-execution \
+                  --execution-arn "${EXECUTION_ARN}" \
+                  --region "${AWS_REGION}" \
+                  --output json
+                echo "Pipeline execution ended with status: ${STATUS}"
+                exit 1
+                ;;
+              RUNNING|PENDING)
+                sleep 30
+                ;;
+              *)
+                echo "Unexpected execution status: ${STATUS}"
+                exit 1
+                ;;
+            esac
+          done
+
+      # =====================================================
+      # 19. REGISTER / UPDATE GLUE CATALOG TABLES
+      # =====================================================
+
+      - name: Register Glue Catalog tables
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python src/utils/register_glue_tables.py
+
+          echo "Glue Catalog registration completed."
