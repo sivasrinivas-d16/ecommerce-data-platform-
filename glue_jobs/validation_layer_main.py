@@ -30,11 +30,11 @@ spark = SparkSession.builder.getOrCreate()
 # 2. Import Existing Validation Modules
 # ---------------------------------------------------------
 
-from validate_customers import validate as validate_customers
-from validate_products import validate as validate_products
-from validate_orders import validate as validate_orders
-from validate_payments import validate as validate_payments
-from validate_events import validate as validate_events
+from validation_customers import validate as validate_customers
+from validation_products import validate as validate_products
+from validation_orders import validate as validate_orders
+from validation_payments import validate as validate_payments
+from validation_events import validate as validate_events
 
 
 # ---------------------------------------------------------

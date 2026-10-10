@@ -63,7 +63,7 @@ def process_orders(
             "order_timestamp",
             to_timestamp(
                 col("order_timestamp"),
-                "yyyy-MM-dd HH:mm:ss"
+                "yyyy-MM-dd'T'HH:mm:ss.SSSX"
             )
         )
     )

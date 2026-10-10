@@ -64,11 +64,13 @@ def process_events(
 
     # 4. Convert the timestamp explicitly.
     # The generator writes timestamps as yyyy-MM-dd HH:mm:ss.
+ 
+# 4. Convert ISO 8601 timestamps explicitly.
     events_df = events_df.withColumn(
         "event_timestamp",
         to_timestamp(
             col("event_timestamp"),
-            "yyyy-MM-dd HH:mm:ss"
+            "yyyy-MM-dd'T'HH:mm:ss.SSSX"
         )
     )
 
