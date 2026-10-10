@@ -1,34 +1,14 @@
 
-from pyspark.sql.types import (
-    StructType,
-    StructField,
-    StringType,
-    IntegerType,
-    DecimalType,
-    TimestampType
+from pyspark.sql.types import StructType, StructField, StringType
+from pyspark.sql.functions import (
+    col,
+    trim,
+    to_timestamp,
+    when,
+    sum as spark_sum
 )
+from pyspark.sql.types import IntegerType, DecimalType
 
-
-# ============================================================
-# 1. Define Orders Schema
-# ============================================================
-
-orders_schema = StructType([
-    StructField("order_id", StringType(), False),
-    StructField("customer_id", StringType(), False),
-    StructField("product_id", StringType(), False),
-    StructField("quantity", IntegerType(), False),
-    StructField("unit_price", DecimalType(12, 2), False),
-    StructField("order_amount", DecimalType(14, 2), False),
-    StructField("order_status", StringType(), False),
-    StructField("payment_status", StringType(), False),
-    StructField("order_timestamp", TimestampType(), False)
-])
-
-
-# ============================================================
-# 2. Reusable Orders Ingestion Function
-# ============================================================
 
 def process_orders(
     spark,
@@ -37,84 +17,95 @@ def process_orders(
     write_mode
 ):
     """
-    Read Orders CSV, perform ingestion checks,
+    Read Orders CSV, validate source data, convert types,
     and write the dataset to the S3 raw layer.
     """
 
-    # --------------------------------------------------------
-    # 3. Read Orders CSV
-    # --------------------------------------------------------
+    # 1. Read source CSV fields as strings for explicit conversion.
+    source_schema = StructType([
+        StructField("order_id", StringType(), True),
+        StructField("customer_id", StringType(), True),
+        StructField("product_id", StringType(), True),
+        StructField("quantity", StringType(), True),
+        StructField("unit_price", StringType(), True),
+        StructField("order_amount", StringType(), True),
+        StructField("order_status", StringType(), True),
+        StructField("payment_status", StringType(), True),
+        StructField("order_timestamp", StringType(), True)
+    ])
 
     orders_df = (
         spark.read
         .option("header", True)
-        .schema(orders_schema)
+        .option("mode", "PERMISSIVE")
+        .schema(source_schema)
         .csv(input_path)
     )
 
-    print("Orders DataFrame loaded successfully")
-    print("Input path:", input_path)
-
-    # --------------------------------------------------------
-    # 4. Record Count
-    # --------------------------------------------------------
-
-    row_count = orders_df.count()
-    print("Orders row count:", row_count)
-
-    # --------------------------------------------------------
-    # 5. Schema and Sample Records
-    # --------------------------------------------------------
-
-    print("Orders Schema:")
+    source_count = orders_df.count()
+    print(f"Orders source row count: {source_count}")
     orders_df.printSchema()
 
-    print("Sample Orders:")
-    orders_df.show(5, truncate=False)
+    # 2. Trim whitespace in source fields.
+    for column_name in orders_df.columns:
+        orders_df = orders_df.withColumn(
+            column_name,
+            trim(col(column_name))
+        )
 
-    # --------------------------------------------------------
-    # 6. Basic Ingestion Validation
-    # --------------------------------------------------------
-
-    print("Orders ingestion validation")
-
-    null_order_ids = (
-        orders_df.filter(
-            orders_df.order_id.isNull()
-        ).count()
+    # 3. Convert numeric and timestamp fields explicitly.
+    orders_df = (
+        orders_df
+        .withColumn("quantity", col("quantity").cast(IntegerType()))
+        .withColumn("unit_price", col("unit_price").cast(DecimalType(12, 2)))
+        .withColumn("order_amount", col("order_amount").cast(DecimalType(14, 2)))
+        .withColumn(
+            "order_timestamp",
+            to_timestamp(
+                col("order_timestamp"),
+                "yyyy-MM-dd HH:mm:ss"
+            )
+        )
     )
 
-    null_customer_ids = (
-        orders_df.filter(
-            orders_df.customer_id.isNull()
-        ).count()
-    )
+    # 4. Report missing required fields.
+    required_columns = [
+        "order_id",
+        "customer_id",
+        "product_id",
+        "quantity",
+        "unit_price",
+        "order_amount",
+        "order_status",
+        "payment_status",
+        "order_timestamp"
+    ]
 
-    null_product_ids = (
-        orders_df.filter(
-            orders_df.product_id.isNull()
-        ).count()
-    )
+    null_summary = orders_df.agg(*[
+        spark_sum(
+            when(col(c).isNull(), 1).otherwise(0)
+        ).alias(c)
+        for c in required_columns
+    ]).first()
 
+    print("Null or failed-conversion counts:")
+    for c in required_columns:
+        print(f"{c}: {null_summary[c]}")
+
+    # 5. Report duplicate order IDs.
     duplicate_order_ids = (
         orders_df.groupBy("order_id")
         .count()
-        .filter("count > 1")
+        .filter(
+            col("order_id").isNotNull()
+            & (col("count") > 1)
+        )
         .count()
     )
 
-    print("Null order IDs:", null_order_ids)
-    print("Null customer IDs:", null_customer_ids)
-    print("Null product IDs:", null_product_ids)
-    print("Duplicate order IDs:", duplicate_order_ids)
+    print(f"Duplicate order IDs: {duplicate_order_ids}")
 
-    # --------------------------------------------------------
-    # 7. Write to Raw Layer
-    # --------------------------------------------------------
-
-    print("Starting Orders raw-layer write")
-    print("Output path:", output_path)
-
+    # 6. Write all rows to the raw layer.
     (
         orders_df.write
         .mode(write_mode)
@@ -122,28 +113,22 @@ def process_orders(
         .save(output_path)
     )
 
-    print("Orders raw-layer write completed")
+    print(f"Orders written to: {output_path}")
 
-    # --------------------------------------------------------
-    # 8. Verify Raw Layer
-    # --------------------------------------------------------
-
+    # 7. Verify raw output.
     raw_orders_df = spark.read.parquet(output_path)
-
     raw_count = raw_orders_df.count()
 
-    print("Raw Orders row count:", raw_count)
+    print(f"Source rows: {source_count}")
+    print(f"Raw rows:    {raw_count}")
 
-    print("Raw Orders schema:")
-    raw_orders_df.printSchema()
-
-    print("Raw Orders sample:")
-    raw_orders_df.show(5, truncate=False)
-
-    if raw_count != row_count:
+    if raw_count != source_count:
         raise RuntimeError(
-            "Orders row-count verification failed: "
-            f"source={row_count}, raw={raw_count}"
+            f"Orders row-count mismatch: "
+            f"source={source_count}, raw={raw_count}"
         )
 
-    print("Orders raw ingestion completed successfully")
+    raw_orders_df.printSchema()
+    raw_orders_df.show(5, truncate=False)
+
+    print("Orders raw ingestion completed successfully.")

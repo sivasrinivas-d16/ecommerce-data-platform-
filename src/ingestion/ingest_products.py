@@ -4,31 +4,16 @@ from pyspark.sql.types import (
     StructField,
     StringType,
     IntegerType,
-    DecimalType,
-    DateType
+    DecimalType
+)
+from pyspark.sql.functions import (
+    col,
+    trim,
+    to_date,
+    when,
+    sum as spark_sum
 )
 
-
-# ============================================================
-# 1. Product Schema
-# ============================================================
-
-product_schema = StructType([
-    StructField("product_id", StringType(), True),
-    StructField("product_name", StringType(), True),
-    StructField("category", StringType(), True),
-    StructField("subcategory", StringType(), True),
-    StructField("brand", StringType(), True),
-    StructField("price", DecimalType(12, 2), True),
-    StructField("stock_quantity", IntegerType(), True),
-    StructField("product_status", StringType(), True),
-    StructField("created_date", DateType(), True)
-])
-
-
-# ============================================================
-# 2. Reusable Products Ingestion Function
-# ============================================================
 
 def process_products(
     spark,
@@ -37,49 +22,82 @@ def process_products(
     write_mode
 ):
     """
-    Read Products CSV and write it to the raw layer.
-    Spark and Glue are initialized by the main script.
+    Read Products CSV, convert types, report data-quality
+    issues, and write the data to the S3 raw Parquet layer.
     """
 
-    # --------------------------------------------------------
-    # 3. Read Products CSV
-    # --------------------------------------------------------
-
-    print("Reading Products source:")
-    print(input_path)
+    # 1. Read source fields as strings for explicit conversion.
+    source_schema = StructType([
+        StructField("product_id", StringType(), True),
+        StructField("product_name", StringType(), True),
+        StructField("category", StringType(), True),
+        StructField("subcategory", StringType(), True),
+        StructField("brand", StringType(), True),
+        StructField("price", StringType(), True),
+        StructField("stock_quantity", StringType(), True),
+        StructField("product_status", StringType(), True),
+        StructField("created_date", StringType(), True)
+    ])
 
     products_df = (
         spark.read
         .option("header", True)
-        .schema(product_schema)
+        .option("mode", "PERMISSIVE")
+        .schema(source_schema)
         .csv(input_path)
     )
 
-    # --------------------------------------------------------
-    # 4. Basic Verification
-    # --------------------------------------------------------
+    source_count = products_df.count()
+    print(f"Products source row count: {source_count}")
+    print(f"Input path: {input_path}")
 
-    record_count = products_df.count()
-
-    print(f"Products record count: {record_count}")
-
-    if record_count == 0:
-        raise RuntimeError(
-            "Products ingestion failed: source contains zero records."
-        )
-
-    print("Products schema:")
     products_df.printSchema()
-
     products_df.show(5, truncate=False)
 
-    # --------------------------------------------------------
-    # 5. Write Raw Parquet
-    # --------------------------------------------------------
+    # 2. Trim whitespace in string columns.
+    for column_name in products_df.columns:
+        products_df = products_df.withColumn(
+            column_name,
+            trim(col(column_name))
+        )
 
-    print("Writing Products raw Parquet:")
-    print(output_path)
+    # 3. Explicitly convert numeric and date fields.
+    products_df = (
+        products_df
+        .withColumn(
+            "price",
+            col("price").cast(DecimalType(12, 2))
+        )
+        .withColumn(
+            "stock_quantity",
+            col("stock_quantity").cast(IntegerType())
+        )
+        .withColumn(
+            "created_date",
+            to_date(col("created_date"), "yyyy-MM-dd")
+        )
+    )
 
+    # 4. Report missing or invalid fields.
+    fields_to_check = [
+        "product_id",
+        "price",
+        "stock_quantity",
+        "created_date"
+    ]
+
+    quality_summary = products_df.agg(*[
+        spark_sum(
+            when(col(field).isNull(), 1).otherwise(0)
+        ).alias(field)
+        for field in fields_to_check
+    ]).first()
+
+    print("Missing or invalid product fields:")
+    for field in fields_to_check:
+        print(f"{field}: {quality_summary[field]}")
+
+    # 5. Write to the raw Parquet layer.
     (
         products_df.write
         .mode(write_mode)
@@ -87,19 +105,23 @@ def process_products(
         .save(output_path)
     )
 
-    # --------------------------------------------------------
-    # 6. Verify Output
-    # --------------------------------------------------------
+    print(f"Products written to: {output_path}")
 
+    # 6. Verify raw output.
     output_df = spark.read.parquet(output_path)
     output_count = output_df.count()
 
-    print(f"Raw Products output count: {output_count}")
+    print(f"Source rows: {source_count}")
+    print(f"Raw rows:    {output_count}")
 
-    if record_count != output_count:
+    if source_count != output_count:
         raise RuntimeError(
-            "Products ingestion count mismatch: "
-            f"input={record_count}, output={output_count}"
+            f"Products row-count mismatch: "
+            f"source={source_count}, raw={output_count}"
         )
+
+    print("Raw Products schema:")
+    output_df.printSchema()
+    output_df.show(5, truncate=False)
 
     print("Products raw ingestion completed successfully.")
