@@ -16,7 +16,7 @@ GLUE_DATABASE = "ecommerce_data_platform"
 S3_BUCKET = "ecommerce-data-platform-version1"
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-SCHEMA_DIR = PROJECT_ROOT / "schemas"
+SCHEMA_DIR = PROJECT_ROOT / "code"/ "schemas"
 
 
 # ============================================================
