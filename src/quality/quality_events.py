@@ -1,435 +1,694 @@
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import col
 
-from pyspark.sql.functions import current_timestamp
-from sklearn.metrics import completeness_score
+from datetime import datetime, timezone
+
+from pyspark.sql import functions as F
 
 
-spark = (
-    SparkSession.builder
-    .appName("ECommerceEventQuality")
-    .master("local[2]")
-    .config("spark.driver.host", "127.0.0.1")
-    .config("spark.driver.bindAddress", "127.0.0.1")
-    .config("spark.hadoop.fs.permissions.umask-mode", "000")
-    .getOrCreate()
-)
+# ============================================================
+# EVENTS DATA QUALITY
+# ============================================================
 
-events_path = r".\ecommerce-data-platform\data\raw\events"
+DATASET_NAME = "events"
 
-events_df = spark.read.parquet(events_path)
-
-print("Events loaded for quality assessment")
-print("Row count:", events_df.count())
-
-events_df.printSchema()
-
-quality_columns = [
+QUALITY_COLUMNS = [
     "event_id",
     "event_type",
     "customer_id",
     "event_timestamp",
     "source",
-    "payload"
+    "payload",
 ]
 
-print("\n--- Completeness Quality ---")
-
-quality_columns = [
-    "event_id",
-    "event_type",
-    "customer_id",
-    "event_timestamp",
-    "source",
-    "payload"
-]
-
-total_records = events_df.count()
-
-completeness_scores = []
-
-for column_name in quality_columns:
-
-    non_null_count = (
-        events_df
-        .filter(col(column_name).isNotNull())
-        .count()
-    )
-
-    completeness = (
-        non_null_count / total_records
-    ) * 100
-
-    completeness_scores.append(completeness)
-
-    print(
-        f"{column_name}: "
-        f"{completeness:.2f}% completeness"
-    )
-
-print("\n--- Event ID Uniqueness Quality ---")
-
-distinct_event_ids = (
-    events_df
-    .select("event_id")
-    .distinct()
-    .count()
-)
-
-event_id_uniqueness = (
-    distinct_event_ids / total_records
-) * 100
-
-print(
-    f"event_id uniqueness: "
-    f"{event_id_uniqueness:.2f}%"
-)
-
-print("\n--- Event Type Validity Quality ---")
-
-valid_event_types = [
+VALID_EVENT_TYPES = [
     "PRODUCT_VIEWED",
     "ADD_TO_CART",
     "ORDER_CREATED",
     "PAYMENT_COMPLETED",
+    "PAYMENT_FAILED",
     "ORDER_SHIPPED",
     "ORDER_DELIVERED",
-    "PAYMENT_FAILED"
 ]
 
-valid_event_type_count = (
-    events_df
-    .filter(col("event_type").isin(valid_event_types))
-    .count()
-)
+PRODUCT_EVENT_TYPES = [
+    "PRODUCT_VIEWED",
+    "ADD_TO_CART",
+]
 
-event_type_validity = (
-    valid_event_type_count / total_records
-) * 100
+ORDER_EVENT_TYPES = [
+    "ORDER_CREATED",
+    "PAYMENT_COMPLETED",
+    "PAYMENT_FAILED",
+    "ORDER_SHIPPED",
+    "ORDER_DELIVERED",
+]
 
-print(
-    f"event_type validity: "
-    f"{event_type_validity:.2f}%"
-)
-
-print("\n--- Customer ID Validity Quality ---")
-
-valid_customer_id_count = (
-    events_df
-    .filter(col("customer_id").rlike("^C[0-9]{5}$"))
-    .count()
-)
-
-customer_id_validity = (
-    valid_customer_id_count / total_records
-) * 100
-
-print(
-    f"customer_id validity: "
-    f"{customer_id_validity:.2f}%"
-)
-
-print("\n--- Event Timestamp Validity Quality ---")
-
-valid_timestamp_count = (
-    events_df
-    .filter(col("event_timestamp") <= current_timestamp())
-    .count()
-)
-
-event_timestamp_validity = (
-    valid_timestamp_count / total_records
-) * 100
-
-print(
-    f"event_timestamp validity: "
-    f"{event_timestamp_validity:.2f}%"
-)
-
-print("\n--- Event Source Validity Quality ---")
-
-valid_sources = [
+VALID_SOURCES = [
     "WEB",
     "MOBILE_APP",
     "API",
-    "STORE"
+    "STORE",
 ]
 
-valid_source_count = (
-    events_df
-    .filter(col("source").isin(valid_sources))
-    .count()
-)
+EVENT_ID_PATTERN = r"^E[0-9]{9}$"
+CUSTOMER_ID_PATTERN = r"^C[0-9]{5}$"
+PRODUCT_ID_PATTERN = r"^P[0-9]{6}$"
+ORDER_ID_PATTERN = r"^O[0-9]{8}$"
+SESSION_ID_PATTERN = r"^S[0-9]{8}$"
 
-event_source_validity = (
-    valid_source_count / total_records
-) * 100
 
-print(
-    f"event_source validity: "
-    f"{event_source_validity:.2f}%"
-)
+# ============================================================
+# HELPERS
+# ============================================================
 
-print("\n--- Product Event Reference Quality ---")
+def percentage(numerator, denominator):
+    if denominator == 0:
+        return 0.0
 
-product_events = [
-    "PRODUCT_VIEWED",
-    "ADD_TO_CART"
-]
+    return round((numerator / denominator) * 100, 2)
 
-product_event_count = (
-    events_df
-    .filter(col("event_type").isin(product_events))
-    .count()
-)
 
-valid_product_event_refs = (
-    events_df
-    .filter(col("event_type").isin(product_events))
-    .filter(col("product_id").isNotNull())
-    .count()
-)
+def add_metric(
+    metrics,
+    metric_name,
+    passed_count,
+    total_count,
+    description,
+):
+    metrics.append({
+        "dataset": DATASET_NAME,
+        "metric_name": metric_name,
+        "metric_score": percentage(
+            passed_count,
+            total_count,
+        ),
+        "passed_records": int(passed_count),
+        "total_records": int(total_count),
+        "failed_records": int(total_count - passed_count),
+        "description": description,
+    })
 
-product_event_reference_validity = (
-    valid_product_event_refs / product_event_count
-) * 100
 
-print(
-    f"product_event reference validity: "
-    f"{product_event_reference_validity:.2f}%"
-)
+def count_rows(df):
+    return df.count()
 
-print("\n--- Order Event Reference Quality ---")
 
-order_events = [
-    "ORDER_CREATED",
-    "PAYMENT_COMPLETED",
-    "ORDER_SHIPPED",
-    "ORDER_DELIVERED",
-    "PAYMENT_FAILED"
-]
+# ============================================================
+# MAIN QUALITY FUNCTION
+# ============================================================
 
-order_event_count = (
-    events_df
-    .filter(col("event_type").isin(order_events))
-    .count()
-)
+def run_quality(
+    spark,
+    events_path,
+    customers_path,
+    products_path,
+    orders_path,
+    quality_report_path=None,
+):
+    """
+    Assess event data quality using Raw events, customers,
+    products, and orders datasets.
 
-valid_order_event_refs = (
-    events_df
-    .filter(col("event_type").isin(order_events))
-    .filter(col("order_id").isNotNull())
-    .count()
-)
+    Returns a dictionary compatible with quality_main.py.
+    """
 
-order_event_reference_validity = (
-    valid_order_event_refs / order_event_count
-) * 100
+    run_timestamp = datetime.now(timezone.utc).isoformat()
 
-print(
-    f"order_event reference validity: "
-    f"{order_event_reference_validity:.2f}%"
-)
+    print("=" * 70)
+    print("EVENTS DATA QUALITY")
+    print("=" * 70)
 
-print("\n--- Product Referential Integrity Quality ---")
+    # --------------------------------------------------------
+    # 1. LOAD DATA
+    # --------------------------------------------------------
 
-products_path = r".\ecommerce-data-platform\data\raw\products"
+    events_df = spark.read.parquet(events_path)
 
-products_df = spark.read.parquet(products_path)
+    customers_df = spark.read.parquet(customers_path).select(
+        "customer_id"
+    ).dropDuplicates()
 
-product_event_ids = (
-    events_df
-    .filter(col("event_type").isin(product_events))
-    .select("product_id")
-    .distinct()
-)
+    products_df = spark.read.parquet(products_path).select(
+        "product_id"
+    ).dropDuplicates()
 
-valid_product_ids = (
-    product_event_ids
-    .join(
-        products_df.select("product_id").distinct(),
-        on="product_id",
-        how="inner"
+    orders_df = spark.read.parquet(orders_path).select(
+        "order_id"
+    ).dropDuplicates()
+
+    # Trim string columns without modifying timestamp types.
+    for field in events_df.schema.fields:
+        if field.dataType.simpleString() == "string":
+            events_df = events_df.withColumn(
+                field.name,
+                F.trim(F.col(field.name)),
+            )
+
+    total_records = events_df.count()
+
+    print("Events loaded:", total_records)
+    events_df.printSchema()
+
+    if total_records == 0:
+        raise ValueError(
+            "Events dataset is empty; quality score cannot be calculated."
+        )
+
+    missing_columns = sorted(
+        set(QUALITY_COLUMNS) - set(events_df.columns)
     )
-    .count()
-)
 
-total_product_ids = product_event_ids.count()
+    if missing_columns:
+        raise ValueError(
+            "Events dataset is missing required columns: "
+            + ", ".join(missing_columns)
+        )
 
-product_referential_integrity = (
-    valid_product_ids / total_product_ids
-) * 100
+    # --------------------------------------------------------
+    # 2. COMPLETENESS
+    # --------------------------------------------------------
 
-print(
-    f"product referential integrity: "
-    f"{product_referential_integrity:.2f}%"
-)
+    print("\n1. EVENT COMPLETENESS")
 
-print("\n--- Order Referential Integrity Quality ---")
+    metrics = []
 
-orders_path = r".\ecommerce-data-platform\data\raw\orders"
+    completeness_expressions = [
+        F.sum(
+            F.when(
+                F.col(column_name).isNotNull()
+                & (
+                    F.trim(F.col(column_name)) != ""
+                    if dict(
+                        (field.name, field.dataType.simpleString())
+                        for field in events_df.schema.fields
+                    )[column_name] == "string"
+                    else F.lit(True)
+                ),
+                1,
+            ).otherwise(0)
+        ).alias(column_name)
+        for column_name in QUALITY_COLUMNS
+    ]
 
-orders_df = spark.read.parquet(orders_path)
+    completeness_row = events_df.agg(
+        *completeness_expressions
+    ).first()
 
-order_event_ids = (
-    events_df
-    .filter(col("event_type").isin(order_events))
-    .select("order_id")
-    .distinct()
-)
+    completeness_scores = []
 
-valid_order_ids = (
-    order_event_ids
-    .join(
-        orders_df.select("order_id").distinct(),
-        on="order_id",
-        how="inner"
+    for column_name in QUALITY_COLUMNS:
+        non_missing = int(
+            completeness_row[column_name] or 0
+        )
+
+        score = percentage(non_missing, total_records)
+        completeness_scores.append(score)
+
+        print(f"{column_name}: {score:.2f}%")
+
+        add_metric(
+            metrics,
+            f"Completeness - {column_name}",
+            non_missing,
+            total_records,
+            f"Non-null and non-blank {column_name} values.",
+        )
+
+    completeness_quality = percentage(
+        sum(completeness_scores),
+        len(completeness_scores),
     )
-    .count()
-)
 
-total_order_ids = order_event_ids.count()
+    # --------------------------------------------------------
+    # 3. EVENT ID UNIQUENESS
+    # --------------------------------------------------------
 
-order_referential_integrity = (
-    valid_order_ids / total_order_ids
-) * 100
+    print("\n2. EVENT ID UNIQUENESS")
 
-print(
-    f"order referential integrity: "
-    f"{order_referential_integrity:.2f}%"
-)
-
-print("\n--- Customer Referential Integrity Quality ---")
-
-customers_path = r".\ecommerce-data-platform\data\raw\customers"
-
-customers_df = spark.read.parquet(customers_path)
-
-event_customer_ids = (
-    events_df
-    .select("customer_id")
-    .distinct()
-)
-
-valid_customer_ids = (
-    event_customer_ids
-    .join(
-        customers_df.select("customer_id").distinct(),
-        on="customer_id",
-        how="inner"
+    duplicate_event_id_rows = (
+        events_df
+        .filter(
+            F.col("event_id").isNotNull()
+            & (F.col("event_id") != "")
+        )
+        .groupBy("event_id")
+        .count()
+        .filter(F.col("count") > 1)
+        .agg(
+            F.sum("count").alias("duplicate_rows")
+        )
+        .first()["duplicate_rows"]
+        or 0
     )
-    .count()
-)
 
-total_customer_ids = event_customer_ids.count()
+    duplicate_event_id_groups = (
+        events_df
+        .filter(
+            F.col("event_id").isNotNull()
+            & (F.col("event_id") != "")
+        )
+        .groupBy("event_id")
+        .count()
+        .filter(F.col("count") > 1)
+        .count()
+    )
 
-customer_referential_integrity = (
-    valid_customer_ids / total_customer_ids
-) * 100
+    duplicate_excess = max(
+        int(duplicate_event_id_rows)
+        - int(duplicate_event_id_groups),
+        0,
+    )
 
-print(
-    f"customer referential integrity: "
-    f"{customer_referential_integrity:.2f}%"
-)
+    unique_event_records = max(
+        total_records - duplicate_excess,
+        0,
+    )
 
-print("\n--- Payload Session ID Validity Quality ---")
+    event_id_uniqueness = percentage(
+        unique_event_records,
+        total_records,
+    )
 
-valid_payload_count = (
-    events_df
-    .filter(col("payload").rlike("^S[0-9]{8}$"))
-    .count()
-)
+    print("Duplicate event ID groups:", duplicate_event_id_groups)
+    print("Event ID uniqueness:", f"{event_id_uniqueness:.2f}%")
 
-payload_session_validity = (
-    valid_payload_count / total_records
-) * 100
+    add_metric(
+        metrics,
+        "Event ID Uniqueness",
+        unique_event_records,
+        total_records,
+        "Duplicate event IDs reduce the uniqueness score.",
+    )
 
-print(
-    f"payload session ID validity: "
-    f"{payload_session_validity:.2f}%"
-)
+    # --------------------------------------------------------
+    # 4. EVENT ID FORMAT
+    # --------------------------------------------------------
 
+    valid_event_id_count = events_df.filter(
+        F.col("event_id").rlike(EVENT_ID_PATTERN)
+    ).count()
 
-print("\n--- Current Quality Metric Variables ---")
+    event_id_format_score = percentage(
+        valid_event_id_count,
+        total_records,
+    )
 
-print("completeness_score:", completeness_score)
-print("event_id_uniqueness:", event_id_uniqueness)
-print("event_type_validity:", event_type_validity)
-print("customer_id_validity:", customer_id_validity)
-print("event_timestamp_validity:", event_timestamp_validity)
-print("event_source_validity:", event_source_validity)
-print("product_event_reference_validity:", product_event_reference_validity)
-print("order_event_reference_validity:", order_event_reference_validity)
-print("product_referential_integrity:", product_referential_integrity)
-print("order_referential_integrity:", order_referential_integrity)
-print("customer_referential_integrity:", customer_referential_integrity)
-print("payload_session_validity:", payload_session_validity)
+    add_metric(
+        metrics,
+        "Event ID Format",
+        valid_event_id_count,
+        total_records,
+        "Event IDs must match E followed by nine digits.",
+    )
 
-print("\n--- Overall Events Quality Score ---")
+    # --------------------------------------------------------
+    # 5. EVENT TYPE VALIDITY
+    # --------------------------------------------------------
 
-completeness_quality = 100.0
+    valid_event_type_count = events_df.filter(
+        F.col("event_type").isin(VALID_EVENT_TYPES)
+    ).count()
 
-overall_quality_score = (
-    completeness_quality
-    + event_id_uniqueness
-    + event_type_validity
-    + customer_id_validity
-    + event_timestamp_validity
-    + event_source_validity
-    + product_event_reference_validity
-    + order_event_reference_validity
-    + product_referential_integrity
-    + order_referential_integrity
-    + customer_referential_integrity
-    + payload_session_validity
-) / 12
+    event_type_validity = percentage(
+        valid_event_type_count,
+        total_records,
+    )
 
-print(
-    f"Overall Events Quality Score: "
-    f"{overall_quality_score:.2f}%"
-)
+    print("Event type validity:", f"{event_type_validity:.2f}%")
 
-quality_report = [
-    ("completeness", completeness_quality),
-    ("event_id_uniqueness", event_id_uniqueness),
-    ("event_type_validity", event_type_validity),
-    ("customer_id_validity", customer_id_validity),
-    ("event_timestamp_validity", event_timestamp_validity),
-    ("event_source_validity", event_source_validity),
-    ("product_event_reference_validity", product_event_reference_validity),
-    ("order_event_reference_validity", order_event_reference_validity),
-    ("product_referential_integrity", product_referential_integrity),
-    ("order_referential_integrity", order_referential_integrity),
-    ("customer_referential_integrity", customer_referential_integrity),
-    ("payload_session_validity", payload_session_validity),
-    ("overall_quality_score", overall_quality_score)
-]
+    add_metric(
+        metrics,
+        "Event Type Validity",
+        valid_event_type_count,
+        total_records,
+        "Event type must be in the configured allowed list.",
+    )
 
-print("\n--- Events Quality Report ---")
+    # --------------------------------------------------------
+    # 6. CUSTOMER ID FORMAT
+    # --------------------------------------------------------
 
-for metric, score in quality_report:
-    print(f"{metric}: {score:.2f}%")
+    valid_customer_id_count = events_df.filter(
+        F.col("customer_id").rlike(CUSTOMER_ID_PATTERN)
+    ).count()
 
-quality_report_df = spark.createDataFrame(
-    quality_report,
-    ["metric", "score"]
-)
+    customer_id_validity = percentage(
+        valid_customer_id_count,
+        total_records,
+    )
 
-print("\n--- Quality Report DataFrame ---")
-quality_report_df.show(truncate=False)
+    add_metric(
+        metrics,
+        "Customer ID Format",
+        valid_customer_id_count,
+        total_records,
+        "Customer IDs must match C followed by five digits.",
+    )
 
-quality_output_path = r".\ecommerce-data-platform\data\processed\quality\events"
+    # --------------------------------------------------------
+    # 7. TIMESTAMP VALIDITY
+    # --------------------------------------------------------
 
-(
-    quality_report_df
-    .write
-    .mode("overwrite")
-    .parquet(quality_output_path)
-)
+    valid_timestamp_count = events_df.filter(
+        F.col("event_timestamp").isNotNull()
+        & (
+            F.col("event_timestamp")
+            <= F.current_timestamp()
+        )
+    ).count()
 
-print("Events quality report persisted successfully.")
+    event_timestamp_validity = percentage(
+        valid_timestamp_count,
+        total_records,
+    )
 
-saved_quality_df = spark.read.parquet(quality_output_path)
+    print(
+        "Event timestamp validity:",
+        f"{event_timestamp_validity:.2f}%",
+    )
 
-print("\n--- Persisted Events Quality Report ---")
-saved_quality_df.show(truncate=False)
+    add_metric(
+        metrics,
+        "Event Timestamp Validity",
+        valid_timestamp_count,
+        total_records,
+        "Timestamp must be populated and not in the future.",
+    )
+
+    # --------------------------------------------------------
+    # 8. SOURCE VALIDITY
+    # --------------------------------------------------------
+
+    valid_source_count = events_df.filter(
+        F.col("source").isin(VALID_SOURCES)
+    ).count()
+
+    event_source_validity = percentage(
+        valid_source_count,
+        total_records,
+    )
+
+    add_metric(
+        metrics,
+        "Event Source Validity",
+        valid_source_count,
+        total_records,
+        "Source must be WEB, MOBILE_APP, API, or STORE.",
+    )
+
+    # --------------------------------------------------------
+    # 9. CONDITIONAL PRODUCT ID REQUIREMENT
+    # --------------------------------------------------------
+
+    product_event_df = events_df.filter(
+        F.col("event_type").isin(PRODUCT_EVENT_TYPES)
+    )
+
+    product_event_count = product_event_df.count()
+
+    valid_product_reference_count = product_event_df.filter(
+        F.col("product_id").rlike(PRODUCT_ID_PATTERN)
+    ).count()
+
+    product_reference_validity = percentage(
+        valid_product_reference_count,
+        product_event_count,
+    )
+
+    print(
+        "Product event reference validity:",
+        f"{product_reference_validity:.2f}%",
+    )
+
+    add_metric(
+        metrics,
+        "Product Event Reference Validity",
+        valid_product_reference_count,
+        product_event_count,
+        "Product browsing/cart events require a correctly formatted product ID.",
+    )
+
+    # --------------------------------------------------------
+    # 10. CONDITIONAL ORDER ID REQUIREMENT
+    # --------------------------------------------------------
+
+    order_event_df = events_df.filter(
+        F.col("event_type").isin(ORDER_EVENT_TYPES)
+    )
+
+    order_event_count = order_event_df.count()
+
+    valid_order_reference_count = order_event_df.filter(
+        F.col("order_id").rlike(ORDER_ID_PATTERN)
+    ).count()
+
+    order_reference_validity = percentage(
+        valid_order_reference_count,
+        order_event_count,
+    )
+
+    print(
+        "Order event reference validity:",
+        f"{order_reference_validity:.2f}%",
+    )
+
+    add_metric(
+        metrics,
+        "Order Event Reference Validity",
+        valid_order_reference_count,
+        order_event_count,
+        "Order-related events require a correctly formatted order ID.",
+    )
+
+    # --------------------------------------------------------
+    # 11. PRODUCT REFERENTIAL INTEGRITY
+    # --------------------------------------------------------
+
+    product_reference_rows = product_event_df.filter(
+        F.col("product_id").isNotNull()
+        & (F.col("product_id") != "")
+    )
+
+    valid_product_references = (
+        product_reference_rows
+        .join(
+            products_df,
+            on="product_id",
+            how="left_semi",
+        )
+        .count()
+    )
+
+    total_product_references = product_reference_rows.count()
+
+    product_referential_integrity = percentage(
+        valid_product_references,
+        total_product_references,
+    )
+
+    print(
+        "Product referential integrity:",
+        f"{product_referential_integrity:.2f}%",
+    )
+
+    add_metric(
+        metrics,
+        "Product Referential Integrity",
+        valid_product_references,
+        total_product_references,
+        "Product references must exist in the Raw products dataset.",
+    )
+
+    # --------------------------------------------------------
+    # 12. ORDER REFERENTIAL INTEGRITY
+    # --------------------------------------------------------
+
+    order_reference_rows = order_event_df.filter(
+        F.col("order_id").isNotNull()
+        & (F.col("order_id") != "")
+    )
+
+    valid_order_references = (
+        order_reference_rows
+        .join(
+            orders_df,
+            on="order_id",
+            how="left_semi",
+        )
+        .count()
+    )
+
+    total_order_references = order_reference_rows.count()
+
+    order_referential_integrity = percentage(
+        valid_order_references,
+        total_order_references,
+    )
+
+    print(
+        "Order referential integrity:",
+        f"{order_referential_integrity:.2f}%",
+    )
+
+    add_metric(
+        metrics,
+        "Order Referential Integrity",
+        valid_order_references,
+        total_order_references,
+        "Order references must exist in the Raw orders dataset.",
+    )
+
+    # --------------------------------------------------------
+    # 13. CUSTOMER REFERENTIAL INTEGRITY
+    # --------------------------------------------------------
+
+    valid_customer_references = (
+        events_df
+        .filter(
+            F.col("customer_id").isNotNull()
+            & (F.col("customer_id") != "")
+        )
+        .join(
+            customers_df,
+            on="customer_id",
+            how="left_semi",
+        )
+        .count()
+    )
+
+    total_customer_references = events_df.filter(
+        F.col("customer_id").isNotNull()
+        & (F.col("customer_id") != "")
+    ).count()
+
+    customer_referential_integrity = percentage(
+        valid_customer_references,
+        total_customer_references,
+    )
+
+    print(
+        "Customer referential integrity:",
+        f"{customer_referential_integrity:.2f}%",
+    )
+
+    add_metric(
+        metrics,
+        "Customer Referential Integrity",
+        valid_customer_references,
+        total_customer_references,
+        "Customer references must exist in Raw customers.",
+    )
+
+    # --------------------------------------------------------
+    # 14. PAYLOAD JSON AND SESSION ID VALIDITY
+    # --------------------------------------------------------
+
+    print("\nPayload JSON and session ID validity")
+
+    payload_schema = """
+        session_id STRING,
+        device STRING,
+        quantity INT,
+        cart_value DOUBLE
+    """
+
+    parsed_events = events_df.withColumn(
+        "_payload",
+        F.from_json(
+            F.col("payload"),
+            payload_schema,
+        ),
+    )
+
+    valid_payload_count = parsed_events.filter(
+        F.col("_payload").isNotNull()
+        & F.col("_payload.session_id").rlike(SESSION_ID_PATTERN)
+        & F.col("_payload.device").isin(
+            "mobile",
+            "desktop",
+            "tablet",
+        )
+        & F.col("_payload.quantity").between(1, 5)
+        & (F.col("_payload.cart_value") >= 0)
+    ).count()
+
+    payload_validity = percentage(
+        valid_payload_count,
+        total_records,
+    )
+
+    print("Valid payloads:", valid_payload_count)
+    print("Payload validity:", f"{payload_validity:.2f}%")
+
+    add_metric(
+        metrics,
+        "Payload Validity",
+        valid_payload_count,
+        total_records,
+        "Payload must be valid JSON with a valid session ID, device, quantity, and cart value.",
+    )
+
+    # --------------------------------------------------------
+    # 15. OVERALL QUALITY SCORE
+    # --------------------------------------------------------
+
+    overall_quality_score = round(
+        sum(metric["metric_score"] for metric in metrics)
+        / len(metrics),
+        2,
+    )
+
+    overall_status = (
+        "PASS"
+        if overall_quality_score >= 95.0
+        and event_id_uniqueness == 100.0
+        and event_id_format_score == 100.0
+        and event_type_validity == 100.0
+        and event_timestamp_validity == 100.0
+        else "FAIL"
+    )
+
+    print("\n" + "=" * 70)
+    print("EVENTS QUALITY SUMMARY")
+    print("=" * 70)
+
+    for metric in metrics:
+        print(
+            f"{metric['metric_name']:<38}"
+            f"{metric['metric_score']:>8.2f}%"
+        )
+
+    print("Overall quality score:", f"{overall_quality_score:.2f}%")
+    print("Overall status:", overall_status)
+
+    # --------------------------------------------------------
+    # 16. PERSIST REPORT
+    # --------------------------------------------------------
+
+    for metric in metrics:
+        metric["overall_quality_score"] = overall_quality_score
+        metric["overall_status"] = overall_status
+        metric["run_timestamp"] = run_timestamp
+
+    report = {
+        "dataset": DATASET_NAME,
+        "overall_status": overall_status,
+        "overall_quality_score": overall_quality_score,
+        "total_records": total_records,
+        "metrics": metrics,
+        "generated_at": run_timestamp,
+    }
+
+    if quality_report_path:
+        report_df = spark.createDataFrame(metrics)
+
+        report_df.write.mode("overwrite").parquet(
+            quality_report_path
+        )
+
+        print("Quality report saved:", quality_report_path)
+
+        spark.read.parquet(
+            quality_report_path
+        ).show(truncate=False)
+
+    return report

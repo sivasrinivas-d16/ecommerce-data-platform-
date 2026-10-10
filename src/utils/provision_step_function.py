@@ -1,7 +1,6 @@
 
 import json
 import boto3
-from botocore.exceptions import ClientError
 
 # =========================================================
 # 1. CONFIGURATION
@@ -20,16 +19,17 @@ STEP_FUNCTION_ROLE = (
 SOURCE_GENERATION_GLUE_JOB = "ecommerce_generate_source_data"
 RAW_LAYER_GLUE_JOB = "ecommerce_raw_layer"
 VALIDATION_MAIN_GLUE_JOB = "ecommerce-validation-main"
+QUALITY_MAIN_GLUE_JOB = "ecommerce-quality-main"
+
 
 # =========================================================
 # 2. STATE MACHINE DEFINITION
 # =========================================================
 
-
 STATE_MACHINE_DEFINITION = {
     "Comment": (
         "E-Commerce Source Generation, Raw Layer, "
-        "and Validation Pipeline"
+        "Validation, and Quality Pipeline"
     ),
     "StartAt": "Generate Source Data",
     "States": {
@@ -81,6 +81,23 @@ STATE_MACHINE_DEFINITION = {
                     "Next": "Validation Failed"
                 }
             ],
+            "Next": "Run Quality Main"
+        },
+
+        "Run Quality Main": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::glue:startJobRun.sync",
+            "Parameters": {
+                "JobName": QUALITY_MAIN_GLUE_JOB
+            },
+            "ResultPath": "$.quality",
+            "Catch": [
+                {
+                    "ErrorEquals": ["States.ALL"],
+                    "ResultPath": "$.error",
+                    "Next": "Quality Failed"
+                }
+            ],
             "Next": "Pipeline Completed"
         },
 
@@ -110,9 +127,19 @@ STATE_MACHINE_DEFINITION = {
             "Type": "Fail",
             "Error": "ValidationExecutionFailed",
             "Cause": (
-                "Raw dataset validation failed. "
-                "Check validation JSON reports and AWS Glue logs. "
-                "Downstream processing must not start."
+                "Dataset validation failed. "
+                "Check validation reports and AWS Glue logs. "
+                "Quality processing must not start."
+            )
+        },
+
+        "Quality Failed": {
+            "Type": "Fail",
+            "Error": "QualityExecutionFailed",
+            "Cause": (
+                "Data quality checks failed. "
+                "Check quality reports and AWS Glue logs. "
+                "Downstream transformation must not start."
             )
         }
     }
@@ -123,12 +150,12 @@ STATE_MACHINE_DEFINITION = {
 # 3. VERIFY REQUIRED GLUE JOBS
 # =========================================================
 
-
 def verify_glue_jobs(glue_client):
     required_jobs = [
         SOURCE_GENERATION_GLUE_JOB,
         RAW_LAYER_GLUE_JOB,
         VALIDATION_MAIN_GLUE_JOB,
+        QUALITY_MAIN_GLUE_JOB,
     ]
 
     for job_name in required_jobs:
@@ -145,8 +172,8 @@ def verify_glue_jobs(glue_client):
         except glue_client.exceptions.EntityNotFoundException as exc:
             raise RuntimeError(
                 f"Required Glue job '{job_name}' does not exist "
-                f"in region {AWS_REGION}. Provision all required "
-                "Glue jobs before deploying the state machine."
+                f"in region {AWS_REGION}. Provision all jobs "
+                "before deploying the state machine."
             ) from exc
 
 
@@ -156,7 +183,6 @@ def verify_glue_jobs(glue_client):
 
 def provision_state_machine(sfn_client):
     definition = json.dumps(STATE_MACHINE_DEFINITION)
-
     existing_state_machine = None
 
     paginator = sfn_client.get_paginator("list_state_machines")
@@ -178,7 +204,7 @@ def provision_state_machine(sfn_client):
         sfn_client.update_state_machine(
             stateMachineArn=state_machine_arn,
             definition=definition,
-            roleArn=STEP_FUNCTION_ROLE
+            roleArn=STEP_FUNCTION_ROLE,
         )
 
         print(f"UPDATED: {STATE_MACHINE_NAME}")
@@ -188,7 +214,7 @@ def provision_state_machine(sfn_client):
             name=STATE_MACHINE_NAME,
             definition=definition,
             roleArn=STEP_FUNCTION_ROLE,
-            type="STANDARD"
+            type="STANDARD",
         )
 
         state_machine_arn = response["stateMachineArn"]
@@ -204,23 +230,21 @@ def provision_state_machine(sfn_client):
 
 def main():
     print("=" * 70)
-    print("SOURCE GENERATION + RAW LAYER DEPLOYMENT")
+    print("ECOMMERCE PIPELINE DEPLOYMENT")
     print("=" * 70)
-
 
     print("AWS Region:", AWS_REGION)
     print("State Machine:", STATE_MACHINE_NAME)
     print("Source Generation Job:", SOURCE_GENERATION_GLUE_JOB)
     print("Raw Layer Job:", RAW_LAYER_GLUE_JOB)
-    print("Validation Main Job:", VALIDATION_MAIN_GLUE_JOB)
-
+    print("Validation Job:", VALIDATION_MAIN_GLUE_JOB)
+    print("Quality Job:", QUALITY_MAIN_GLUE_JOB)
 
     session = boto3.Session(region_name=AWS_REGION)
 
     glue_client = session.client("glue")
     sfn_client = session.client("stepfunctions")
 
-    # Both jobs must exist before the state machine is deployed.
     verify_glue_jobs(glue_client)
 
     state_machine_arn = provision_state_machine(sfn_client)

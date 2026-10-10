@@ -92,6 +92,12 @@ jobs:
             "src/utils/provision_glue_jobs.py"
             "src/utils/provision_step_function.py"
             "src/utils/register_glue_tables.py"
+            "glue_jobs/quality_main.py"
+            "src/quality/quality_customers.py"
+            "src/quality/quality_products.py"
+            "src/quality/quality_orders.py"
+            "src/quality/quality_payments.py"
+            "src/quality/quality_events.py"
           )
 
           for file in "${required_files[@]}"; do
@@ -122,7 +128,13 @@ jobs:
             src/ingestion/ingest_events.py \
             src/utils/provision_glue_jobs.py \
             src/utils/provision_step_function.py \
-            src/utils/register_glue_tables.py
+            src/utils/register_glue_tables.py\
+            glue_jobs/quality_main.py \
+            src/quality/quality_customers.py \
+            src/quality/quality_products.py \
+            src/quality/quality_orders.py \
+            src/quality/quality_payments.py \
+            src/quality/quality_events.py \
 
           echo "Python syntax checks passed."
 
@@ -196,6 +208,18 @@ jobs:
                   "validation_events.py",
               ],
           )
+          # Quality modules
+          create_zip(
+              "src/quality",
+              "build/quality_modules.zip",
+              [
+                  "quality_customers.py",
+                  "quality_products.py",
+                  "quality_orders.py",
+                  "quality_payments.py",
+                  "quality_events.py",
+              ],
+          )
           PY
        
       # =====================================================
@@ -230,6 +254,15 @@ jobs:
           aws s3 cp \
             glue_jobs/validation_layer_main.py \
             "s3://${S3_BUCKET}/scripts/validation_main.py" \
+            --region "${AWS_REGION}"
+          aws s3 cp \
+          glue_jobs/quality_main.py \
+          "s3://${S3_BUCKET}/scripts/quality_main.py" \
+          --region "${AWS_REGION}"
+
+          aws s3 cp \
+            build/quality_modules.zip \
+            "s3://${S3_BUCKET}/scripts/quality_modules.zip" \
             --region "${AWS_REGION}"
 
           echo "Glue scripts and module ZIPs uploaded successfully."
@@ -347,7 +380,21 @@ jobs:
             --bucket "${S3_BUCKET}" \
             --key scripts/raw/raw_modules.zip \
             --region "${AWS_REGION}"
+          echo "Verifying quality main script..."
 
+          echo "Verifying quality main script..."
+
+          aws s3api head-object \
+            --bucket "${S3_BUCKET}" \
+            --key scripts/quality_main.py \
+            --region "${AWS_REGION}"
+
+          echo "Verifying quality modules ZIP..."
+
+          aws s3api head-object \
+            --bucket "${S3_BUCKET}" \
+            --key scripts/quality_modules.zip \
+            --region "${AWS_REGION}"
           echo "All required S3 objects verified successfully."
 
       # =====================================================

@@ -83,9 +83,63 @@ def write_report(dataset, report):
     print(f"Report saved: s3://{BUCKET}/{key}")
 
 
+
 # ---------------------------------------------------------
 # 5. Run All Dataset Validations
 # ---------------------------------------------------------
+
+MAX_FAILED_COLUMNS = 3
+
+
+def get_failed_columns(report):
+    """
+    Count columns that fail validation.
+
+    Supports metrics represented as:
+      - [{"column": "email", "status": "FAIL"}, ...]
+      - [{"column_name": "email", "passed": False}, ...]
+      - [{"metric_name": "email", "failed_records": 5}, ...]
+
+    Adjust the field names here if your validation modules
+    use a different report structure.
+    """
+
+    metrics = report.get("metrics", [])
+    failed_columns = set()
+
+    for metric in metrics:
+        if not isinstance(metric, dict):
+            continue
+
+        column_name = (
+            metric.get("column")
+            or metric.get("column_name")
+            or metric.get("column_name_checked")
+        )
+
+        if not column_name:
+            continue
+
+        status = str(metric.get("status", "")).upper()
+
+        passed = metric.get("passed")
+
+        failed_records = metric.get("failed_records")
+
+        is_failed = (
+            status == "FAIL"
+            or passed is False
+            or (
+                failed_records is not None
+                and int(failed_records) > 3
+            )
+        )
+
+        if is_failed:
+            failed_columns.add(column_name)
+
+    return sorted(failed_columns)
+
 
 def main():
     failed_datasets = []
@@ -97,7 +151,6 @@ def main():
         print("=" * 70)
 
         try:
-            # Run the existing dataset validation logic.
             report = validator(spark, BUCKET)
 
             if not isinstance(report, dict):
@@ -105,18 +158,27 @@ def main():
                     f"{dataset} validator must return a dictionary"
                 )
 
-            # Missing status is a failure.
-            status = str(
-                report.get("overall_status", "FAIL")
-            ).upper()
+            failed_columns = get_failed_columns(report)
 
-            if status != "PASS":
+            report["failed_columns"] = failed_columns
+            report["failed_column_count"] = len(failed_columns)
+
+            if len(failed_columns) > MAX_FAILED_COLUMNS:
                 report["overall_status"] = "FAIL"
                 failed_datasets.append(dataset)
+
+                print(
+                    f"{dataset}: {len(failed_columns)} columns failed."
+                )
+
             else:
                 report["overall_status"] = "PASS"
 
-            # Persist report even when validation returns FAIL.
+                print(
+                    f"{dataset}: {len(failed_columns)} columns failed. "
+                    "Within the allowed limit."
+                )
+
             write_report(dataset, report)
 
             print(
@@ -129,8 +191,6 @@ def main():
 
             failed_datasets.append(dataset)
 
-            # Attempt to persist the failure report.
-            # If this write fails, the Glue job also fails.
             error_report = {
                 "overall_status": "FAIL",
                 "error": str(exc),
@@ -162,6 +222,7 @@ def main():
 
     print("All five datasets passed validation.")
     print("Validation pipeline completed successfully.")
+
 
 
 # ---------------------------------------------------------

@@ -47,7 +47,7 @@
     },
     {
       "name": "order_timestamp",
-      "type": "string",
+      "type": "timestamp",
       "required": true
     }
   ]

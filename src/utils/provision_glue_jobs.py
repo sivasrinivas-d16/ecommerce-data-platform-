@@ -321,7 +321,85 @@ def provision_validation_main_job():
 
 
 # ============================================================
-# 17. MAIN
+# 17. QUALITY MAIN GLUE JOB
+# ============================================================
+
+QUALITY_MAIN_JOB = "ecommerce-quality-main"
+
+QUALITY_MAIN_SCRIPT = (
+    f"s3://{S3_BUCKET}/scripts/quality_main.py"
+)
+
+QUALITY_MODULES = (
+    f"s3://{S3_BUCKET}/scripts/quality_modules.zip"
+)
+
+# ============================================================
+# 18. VERIFY QUALITY FILES IN S3
+# ============================================================
+
+def verify_quality_files():
+    required_keys = [
+        "scripts/quality_main.py",
+        "scripts/quality_modules.zip",
+    ]
+
+    for key in required_keys:
+        try:
+            s3_client.head_object(
+                Bucket=S3_BUCKET,
+                Key=key,
+            )
+
+            print(
+                f"Quality file verified: "
+                f"s3://{S3_BUCKET}/{key}"
+            )
+
+        except ClientError as error:
+            error_code = error.response.get(
+                "Error", {}
+            ).get("Code", "")
+
+            if error_code in (
+                "404",
+                "NoSuchKey",
+                "NotFound",
+            ):
+                raise FileNotFoundError(
+                    f"Required quality file is missing: "
+                    f"s3://{S3_BUCKET}/{key}"
+                ) from error
+
+            raise
+
+
+# ============================================================
+# 19. QUALITY MAIN GLUE JOB
+# ============================================================
+
+def provision_quality_main_job():
+    print("Checking quality script and ZIP in S3...")
+
+    verify_quality_files()
+
+    quality_arguments = {
+        "--S3_BUCKET": S3_BUCKET,
+        "--extra-py-files": QUALITY_MODULES,
+    }
+
+    create_or_update_job(
+        job_name=QUALITY_MAIN_JOB,
+        script_location=QUALITY_MAIN_SCRIPT,
+        extra_arguments=quality_arguments,
+        worker_type="G.1X",
+        number_of_workers=5,
+        timeout=180,
+    )
+
+
+# ============================================================
+# 20. MAIN
 # ============================================================
 
 def main():
@@ -338,9 +416,16 @@ def main():
     print("\nProvisioning validation main job...")
     provision_validation_main_job()
 
+    print("\nProvisioning quality main job...")
+    provision_quality_main_job()
+
     print("\n" + "=" * 70)
     print("GLUE JOB PROVISIONING COMPLETED")
     print("=" * 70)
+
+
+if __name__ == "__main__":
+    main()
 
 
 if __name__ == "__main__":

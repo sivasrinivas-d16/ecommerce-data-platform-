@@ -1,45 +1,16 @@
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, count, when
 
-from datetime import datetime
+from datetime import datetime, timezone
 
-# ---------------------------------------------------------
-# Spark Session
-# ---------------------------------------------------------
-
-spark = (
-    SparkSession.builder
-    .appName("ECommerceProductQuality")
-    .master("local[2]")
-    .config("spark.driver.host", "127.0.0.1")
-    .config("spark.driver.bindAddress", "127.0.0.1")
-    .config("spark.hadoop.fs.permissions.umask-mode", "000")
-    .getOrCreate()
-)
+from pyspark.sql import functions as F
 
 
-# ---------------------------------------------------------
-# Load Products from Raw Layer
-# ---------------------------------------------------------
+# ============================================================
+# PRODUCTS DATA QUALITY CONFIGURATION
+# ============================================================
 
-products_path = r".\ecommerce-data-platform\data\raw\products"
+DATASET_NAME = "products"
 
-products_df = spark.read.parquet(products_path)
-
-total_records = products_df.count()
-
-print("Products loaded from Raw layer")
-print("Total product records:", total_records)
-
-print("\nProduct Schema:")
-products_df.printSchema()
-
-
-# ---------------------------------------------------------
-# Completeness Measurement
-# ---------------------------------------------------------
-
-quality_columns = [
+QUALITY_COLUMNS = [
     "product_id",
     "product_name",
     "category",
@@ -48,256 +19,482 @@ quality_columns = [
     "price",
     "stock_quantity",
     "product_status",
-    "created_date"
+    "created_date",
 ]
 
-completeness_counts = products_df.select(
-    *[
-        count(
-            when(col(column_name).isNotNull(), 1)
-        ).alias(column_name)
-        for column_name in quality_columns
-    ]
-).collect()[0]
+PRODUCT_ID_PATTERN = r"^P[0-9]{6}$"
 
-
-print("\nProduct Completeness:")
-
-for column_name in quality_columns:
-
-    non_null_count = completeness_counts[column_name]
-
-    completeness_percentage = (
-        non_null_count / total_records
-    ) * 100
-
-    print(
-        f"{column_name:<18} "
-        f"Completeness: {completeness_percentage:.2f}%"
-    )
-
-# ---------------------------------------------------------
-# Product ID Uniqueness
-# ---------------------------------------------------------
-
-unique_product_ids = products_df.select(
-    "product_id"
-).distinct().count()
-
-uniqueness_percentage = (
-    unique_product_ids / total_records
-) * 100
-
-print("\nProduct ID Uniqueness:")
-print("Unique product IDs:", unique_product_ids)
-print(f"Uniqueness: {uniqueness_percentage:.2f}%")
-
-# ---------------------------------------------------------
-# Product ID Format Quality
-# ---------------------------------------------------------
-
-valid_product_id_count = products_df.filter(
-    col("product_id").rlike(r"^P[0-9]{6}$")
-).count()
-
-product_id_validity_percentage = (
-    valid_product_id_count / total_records
-) * 100
-
-print("\nProduct ID Format Quality:")
-print("Valid product ID records:", valid_product_id_count)
-print(
-    f"Product ID Validity: "
-    f"{product_id_validity_percentage:.2f}%"
-)
-
-# ---------------------------------------------------------
-# Price Validity
-# ---------------------------------------------------------
-
-valid_price_count = products_df.filter(
-    col("price") >= 0
-).count()
-
-price_validity_percentage = (
-    valid_price_count / total_records
-) * 100
-
-print("\nPrice Validity:")
-print("Valid price records:", valid_price_count)
-print(
-    f"Price Validity: "
-    f"{price_validity_percentage:.2f}%"
-)
-
-# ---------------------------------------------------------
-# Stock Quantity Validity
-# ---------------------------------------------------------
-
-valid_stock_quantity_count = products_df.filter(
-    col("stock_quantity") >= 0
-).count()
-
-stock_quantity_validity_percentage = (
-    valid_stock_quantity_count / total_records
-) * 100
-
-print("\nStock Quantity Validity:")
-print(
-    "Valid stock quantity records:",
-    valid_stock_quantity_count
-)
-
-print(
-    f"Stock Quantity Validity: "
-    f"{stock_quantity_validity_percentage:.2f}%"
-)
-
-# ---------------------------------------------------------
-# Product Status Validity
-# ---------------------------------------------------------
-
-valid_product_statuses = [
+VALID_PRODUCT_STATUSES = [
     "ACTIVE",
     "INACTIVE",
-    "DISCONTINUED"
+    "DISCONTINUED",
 ]
 
-valid_product_status_count = products_df.filter(
-    col("product_status").isin(valid_product_statuses)
-).count()
 
-product_status_validity_percentage = (
-    valid_product_status_count / total_records
-) * 100
+# ============================================================
+# HELPER FUNCTIONS
+# ============================================================
 
-print("\nProduct Status Validity:")
-print(
-    "Valid product status records:",
-    valid_product_status_count
-)
+def percentage(numerator, denominator):
+    if denominator == 0:
+        return 0.0
 
-print(
-    f"Product Status Validity: "
-    f"{product_status_validity_percentage:.2f}%"
-)
+    return round((numerator / denominator) * 100, 2)
 
-# ---------------------------------------------------------
-# Created Date Validity
-# ---------------------------------------------------------
 
-from pyspark.sql.functions import current_date
+def add_metric(
+    metrics,
+    metric_name,
+    passed_count,
+    total_count,
+    description,
+):
+    metrics.append({
+        "dataset": DATASET_NAME,
+        "metric_name": metric_name,
+        "metric_score": percentage(
+            passed_count,
+            total_count,
+        ),
+        "passed_records": int(passed_count),
+        "total_records": int(total_count),
+        "failed_records": int(total_count - passed_count),
+        "description": description,
+    })
 
-valid_created_date_count = products_df.filter(
-    col("created_date").isNotNull()
-    & (col("created_date") <= current_date())
-).count()
 
-created_date_validity_percentage = (
-    valid_created_date_count / total_records
-) * 100
+def duplicate_statistics(df, column_name):
+    """
+    Calculate duplicate groups and excess duplicate rows.
+    Null and blank values are handled by completeness checks.
+    """
 
-print("\nCreated Date Validity:")
-print(
-    "Valid created date records:",
-    valid_created_date_count
-)
-
-print(
-    f"Created Date Validity: "
-    f"{created_date_validity_percentage:.2f}%"
-)
-
-# ---------------------------------------------------------
-# Overall Product Quality Score
-# ---------------------------------------------------------
-
-quality_metrics = [
-    ("Completeness", 100.00),
-    ("Product ID Uniqueness", uniqueness_percentage),
-    ("Product ID Validity", product_id_validity_percentage),
-    ("Price Validity", price_validity_percentage),
-    ("Stock Quantity Validity", stock_quantity_validity_percentage),
-    ("Product Status Validity", product_status_validity_percentage),
-    ("Created Date Validity", created_date_validity_percentage)
-]
-
-overall_quality_score = (
-    sum(metric_score for _, metric_score in quality_metrics)
-    / len(quality_metrics)
-)
-
-print("\nProduct Quality Metrics:")
-
-for metric_name, metric_score in quality_metrics:
-    print(
-        f"{metric_name:<30} "
-        f"Score: {metric_score:.2f}%"
+    duplicate_groups = (
+        df.filter(
+            F.col(column_name).isNotNull()
+            & (F.trim(F.col(column_name)) != "")
+        )
+        .groupBy(column_name)
+        .count()
+        .filter(F.col("count") > 1)
     )
 
-print(
-    f"\nOverall Product Quality Score: "
-    f"{overall_quality_score:.2f}%"
-)
+    group_count = duplicate_groups.count()
 
-# ---------------------------------------------------------
-# Quality Report
-# ---------------------------------------------------------
+    duplicate_rows = (
+        duplicate_groups
+        .agg(F.sum("count").alias("duplicate_rows"))
+        .first()["duplicate_rows"]
+        or 0
+    )
 
-quality_run_timestamp = datetime.now()
+    duplicate_excess = max(
+        int(duplicate_rows) - group_count,
+        0,
+    )
 
-quality_report = [
-    {
-        "dataset": "products",
-        "metric_name": metric_name,
-        "metric_score": metric_score,
-        "run_timestamp": quality_run_timestamp
+    return group_count, duplicate_excess
+
+
+# ============================================================
+# MAIN QUALITY FUNCTION
+# ============================================================
+
+def run_quality(
+    spark,
+    products_path,
+    quality_report_path=None,
+):
+    """
+    Run product data quality checks.
+
+    Uses the Spark session supplied by the caller.
+    Returns a dictionary for quality_main.py.
+    """
+
+    run_timestamp = datetime.now(timezone.utc).isoformat()
+
+    print("=" * 70)
+    print("PRODUCTS DATA QUALITY")
+    print("=" * 70)
+    print("Products path:", products_path)
+
+    products_df = spark.read.parquet(products_path)
+
+    # Normalize string values before checking them.
+    for field in products_df.schema.fields:
+        if field.dataType.simpleString() == "string":
+            products_df = products_df.withColumn(
+                field.name,
+                F.trim(F.col(field.name)),
+            )
+
+    missing_columns = sorted(
+        set(QUALITY_COLUMNS) - set(products_df.columns)
+    )
+
+    if missing_columns:
+        raise ValueError(
+            "Products dataset is missing required columns: "
+            + ", ".join(missing_columns)
+        )
+
+    total_records = products_df.count()
+
+    print("Total product records:", total_records)
+    products_df.printSchema()
+
+    if total_records == 0:
+        raise ValueError(
+            "Products dataset is empty; quality score cannot be calculated."
+        )
+
+    metrics = []
+
+    # ========================================================
+    # 1. COMPLETENESS
+    # ========================================================
+
+    print("\n1. PRODUCT COMPLETENESS")
+
+    completeness_expressions = [
+        F.sum(
+            F.when(
+                F.col(column_name).isNotNull()
+                & (F.trim(F.col(column_name)) != ""),
+                1,
+            ).otherwise(0)
+        ).alias(column_name)
+        for column_name in QUALITY_COLUMNS
+    ]
+
+    completeness_row = products_df.agg(
+        *completeness_expressions
+    ).first()
+
+    completeness_scores = []
+
+    for column_name in QUALITY_COLUMNS:
+        non_missing = int(
+            completeness_row[column_name] or 0
+        )
+
+        score = percentage(non_missing, total_records)
+        completeness_scores.append(score)
+
+        print(f"{column_name}: {score:.2f}%")
+
+        add_metric(
+            metrics,
+            f"Completeness - {column_name}",
+            non_missing,
+            total_records,
+            f"Non-null and non-blank {column_name} values.",
+        )
+
+    completeness_score = percentage(
+        sum(completeness_scores),
+        len(completeness_scores),
+    )
+
+    # ========================================================
+    # 2. PRODUCT ID UNIQUENESS
+    # ========================================================
+
+    print("\n2. PRODUCT ID UNIQUENESS")
+
+    duplicate_groups, duplicate_excess = duplicate_statistics(
+        products_df,
+        "product_id",
+    )
+
+    unique_product_records = max(
+        total_records - duplicate_excess,
+        0,
+    )
+
+    product_id_uniqueness = percentage(
+        unique_product_records,
+        total_records,
+    )
+
+    print("Duplicate product ID groups:", duplicate_groups)
+    print("Product ID uniqueness:", f"{product_id_uniqueness:.2f}%")
+
+    add_metric(
+        metrics,
+        "Product ID Uniqueness",
+        unique_product_records,
+        total_records,
+        "Duplicate product IDs reduce the uniqueness score.",
+    )
+
+    # ========================================================
+    # 3. PRODUCT ID FORMAT
+    # ========================================================
+
+    valid_product_id_count = products_df.filter(
+        F.col("product_id").rlike(PRODUCT_ID_PATTERN)
+    ).count()
+
+    product_id_validity = percentage(
+        valid_product_id_count,
+        total_records,
+    )
+
+    add_metric(
+        metrics,
+        "Product ID Format",
+        valid_product_id_count,
+        total_records,
+        "Product IDs must match P followed by six digits.",
+    )
+
+    # ========================================================
+    # 4. PRODUCT NAME VALIDITY
+    # ========================================================
+
+    valid_product_name_count = products_df.filter(
+        F.col("product_name").isNotNull()
+        & (F.col("product_name") != "")
+    ).count()
+
+    product_name_validity = percentage(
+        valid_product_name_count,
+        total_records,
+    )
+
+    add_metric(
+        metrics,
+        "Product Name Validity",
+        valid_product_name_count,
+        total_records,
+        "Product names must not be null or blank.",
+    )
+
+    # ========================================================
+    # 5. CATEGORY AND SUBCATEGORY VALIDITY
+    # ========================================================
+
+    valid_category_count = products_df.filter(
+        F.col("category").isNotNull()
+        & (F.col("category") != "")
+    ).count()
+
+    category_validity = percentage(
+        valid_category_count,
+        total_records,
+    )
+
+    add_metric(
+        metrics,
+        "Category Validity",
+        valid_category_count,
+        total_records,
+        "Category must not be null or blank.",
+    )
+
+    valid_subcategory_count = products_df.filter(
+        F.col("subcategory").isNotNull()
+        & (F.col("subcategory") != "")
+    ).count()
+
+    subcategory_validity = percentage(
+        valid_subcategory_count,
+        total_records,
+    )
+
+    add_metric(
+        metrics,
+        "Subcategory Validity",
+        valid_subcategory_count,
+        total_records,
+        "Subcategory must not be null or blank.",
+    )
+
+    # ========================================================
+    # 6. BRAND VALIDITY
+    # ========================================================
+
+    valid_brand_count = products_df.filter(
+        F.col("brand").isNotNull()
+        & (F.col("brand") != "")
+    ).count()
+
+    brand_validity = percentage(
+        valid_brand_count,
+        total_records,
+    )
+
+    add_metric(
+        metrics,
+        "Brand Validity",
+        valid_brand_count,
+        total_records,
+        "Brand must not be null or blank.",
+    )
+
+    # ========================================================
+    # 7. PRICE VALIDITY
+    # ========================================================
+
+    valid_price_count = products_df.filter(
+        F.col("price").isNotNull()
+        & (F.col("price") >= 0)
+    ).count()
+
+    price_validity = percentage(
+        valid_price_count,
+        total_records,
+    )
+
+    add_metric(
+        metrics,
+        "Price Validity",
+        valid_price_count,
+        total_records,
+        "Price must be present and greater than or equal to zero.",
+    )
+
+    # ========================================================
+    # 8. STOCK QUANTITY VALIDITY
+    # ========================================================
+
+    valid_stock_count = products_df.filter(
+        F.col("stock_quantity").isNotNull()
+        & (F.col("stock_quantity") >= 0)
+        & (
+            F.col("stock_quantity")
+            == F.floor(F.col("stock_quantity"))
+        )
+    ).count()
+
+    stock_quantity_validity = percentage(
+        valid_stock_count,
+        total_records,
+    )
+
+    add_metric(
+        metrics,
+        "Stock Quantity Validity",
+        valid_stock_count,
+        total_records,
+        "Stock must be a non-negative whole number.",
+    )
+
+    # ========================================================
+    # 9. PRODUCT STATUS VALIDITY
+    # ========================================================
+
+    valid_product_status_count = products_df.filter(
+        F.col("product_status").isin(
+            VALID_PRODUCT_STATUSES
+        )
+    ).count()
+
+    product_status_validity = percentage(
+        valid_product_status_count,
+        total_records,
+    )
+
+    add_metric(
+        metrics,
+        "Product Status Validity",
+        valid_product_status_count,
+        total_records,
+        "Product status must be ACTIVE, INACTIVE, or DISCONTINUED.",
+    )
+
+    # ========================================================
+    # 10. CREATED DATE VALIDITY
+    # ========================================================
+
+    created_date = F.to_date(
+        F.col("created_date"),
+        "yyyy-MM-dd",
+    )
+
+    valid_created_date_count = products_df.filter(
+        F.col("created_date").isNotNull()
+        & (F.col("created_date") != "")
+        & created_date.isNotNull()
+        & (created_date <= F.current_date())
+    ).count()
+
+    created_date_validity = percentage(
+        valid_created_date_count,
+        total_records,
+    )
+
+    add_metric(
+        metrics,
+        "Created Date Validity",
+        valid_created_date_count,
+        total_records,
+        "Created date must be a valid ISO date and not in the future.",
+    )
+
+    # ========================================================
+    # 11. OVERALL QUALITY SCORE
+    # ========================================================
+
+    overall_quality_score = round(
+        sum(metric["metric_score"] for metric in metrics)
+        / len(metrics),
+        2,
+    )
+
+    overall_status = (
+        "PASS"
+        if overall_quality_score >= 95.0
+        and product_id_uniqueness == 100.0
+        and product_id_validity == 100.0
+        and product_status_validity == 100.0
+        else "FAIL"
+    )
+
+    print("\n" + "=" * 70)
+    print("PRODUCTS QUALITY SUMMARY")
+    print("=" * 70)
+
+    for metric in metrics:
+        print(
+            f"{metric['metric_name']:<40}"
+            f"{metric['metric_score']:>8.2f}%"
+        )
+
+    print("Overall quality score:", f"{overall_quality_score:.2f}%")
+    print("Overall status:", overall_status)
+
+    # ========================================================
+    # 12. QUALITY REPORT
+    # ========================================================
+
+    for metric in metrics:
+        metric["overall_quality_score"] = overall_quality_score
+        metric["overall_status"] = overall_status
+        metric["run_timestamp"] = run_timestamp
+
+    report = {
+        "dataset": DATASET_NAME,
+        "overall_status": overall_status,
+        "overall_quality_score": overall_quality_score,
+        "total_records": total_records,
+        "metrics": metrics,
+        "generated_at": run_timestamp,
     }
-    for metric_name, metric_score in quality_metrics
-]
 
-print("\nQuality Report:")
+    if quality_report_path:
+        report_df = spark.createDataFrame(metrics)
 
-for result in quality_report:
-    print(result)
+        report_df.write.mode("overwrite").parquet(
+            quality_report_path
+        )
 
-# ---------------------------------------------------------
-# Persist Quality Report
-# ---------------------------------------------------------
+        print("Quality report saved:", quality_report_path)
 
-quality_report_path = (
-    r".\ecommerce-data-platform\data\processed\quality\products"
-)
+        spark.read.parquet(
+            quality_report_path
+        ).show(truncate=False)
 
-quality_report_df = spark.createDataFrame(quality_report)
-
-quality_report_df.write \
-    .mode("overwrite") \
-    .parquet(quality_report_path)
-
-print("\nProduct quality report written successfully.")
-
-# ---------------------------------------------------------
-# Verify Persisted Quality Report
-# ---------------------------------------------------------
-
-saved_quality_report_df = spark.read.parquet(
-    quality_report_path
-)
-
-print("\nPersisted Product Quality Report:")
-saved_quality_report_df.show(
-    truncate=False
-)
-
-print(
-    "Persisted quality report count:",
-    saved_quality_report_df.count()
-)
-
-# ---------------------------------------------------------
-# Stop Spark
-# ---------------------------------------------------------
-
-spark.stop()
-
+    return report
