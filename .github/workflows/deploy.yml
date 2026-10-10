@@ -233,6 +233,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          echo "Downloading JSON schemas from S3..."
+          mkdir -p code/schemas
+          aws s3 sync \
+            "s3://${S3_BUCKET}/code/schemas/" \
+            code/schemas/ \
+            --exclude "*" \
+            --include "*.json"
+
+          echo "Checking downloaded schema files..."
+          find code/schemas -maxdepth 1 -type f -name "*.json" -print
+          if ! find code/schemas -maxdepth 1 -type f -name "*.json" -print -quit | grep -q .; then
+            echo "ERROR: No JSON schemas found in s3://${S3_BUCKET}/code/schemas/"
+            exit 1
+          fi
+
           python src/utils/register_glue_tables.py
 
           for table in customers products orders payments events customers_curated; do
