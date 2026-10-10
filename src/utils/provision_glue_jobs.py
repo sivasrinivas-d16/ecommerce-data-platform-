@@ -255,14 +255,6 @@ def main():
     print("\nProvisioning source-generation job...")
     provision_source_generation_job()
 
-    print("\nProvisioning Customers jobs...")
-    provision_customers_etl_job()
-    provision_customers_validation_quality_job()
-    provision_customers_transformation_job()
-
-    print("\nProvisioning Products job...")
-    provision_products_etl_job()
-
     print("\nProvisioning combined raw-layer job...")
     provision_raw_layer_job()
 
