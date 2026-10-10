@@ -226,7 +226,27 @@ jobs:
             aws s3 sync docs/ \
               "s3://${S3_BUCKET}/code/docs/"
           fi
+      # =====================================================
+      # 11. CREATE OR UPDATE GLUE CATALOG TABLES
+      # =====================================================
+      - name: Create or update Glue Catalog tables
+        shell: bash
+        run: |
+          set -euo pipefail
+          python src/utils/register_glue_tables.py
 
+          for table in customers products orders payments events customers_curated; do
+            echo "Verifying Glue Catalog table: ${table}"
+            aws glue get-table \
+              --database-name ecommerce_data_platform \
+              --name "${table}" \
+              --region "${AWS_REGION}" \
+              --query 'Table.{Name:Name,Location:StorageDescriptor.Location,Format:StorageDescriptor.SerdeInfo.SerializationLibrary}' \
+              --output json
+          done
+
+          echo "Glue Catalog tables created/updated and verified."
+          
       # =====================================================
       # 11. VERIFY SCRIPT OBJECTS
       # =====================================================
