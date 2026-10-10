@@ -361,51 +361,51 @@ jobs:
 
           echo "STATE_MACHINE_ARN=${STATE_MACHINE_ARN}" >> "$GITHUB_ENV"
 
-      # =====================================================
-      # 17. START THE PIPELINE
-      # =====================================================
+      # # =====================================================
+      # # 17. START THE PIPELINE
+      # # =====================================================
 
-      - name: Start raw-layer pipeline
-        shell: bash
-        run: |
-          set -euo pipefail
+      # - name: Start raw-layer pipeline
+      #   shell: bash
+      #   run: |
+      #     set -euo pipefail
 
-          EXECUTION_NAME="raw-layer-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+      #     EXECUTION_NAME="raw-layer-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
-          EXECUTION_ARN=$(aws stepfunctions start-execution \
-            --state-machine-arn "${STATE_MACHINE_ARN}" \
-            --name "${EXECUTION_NAME}" \
-            --input '{}' \
-            --region "${AWS_REGION}" \
-            --query executionArn \
-            --output text)
+      #     EXECUTION_ARN=$(aws stepfunctions start-execution \
+      #       --state-machine-arn "${STATE_MACHINE_ARN}" \
+      #       --name "${EXECUTION_NAME}" \
+      #       --input '{}' \
+      #       --region "${AWS_REGION}" \
+      #       --query executionArn \
+      #       --output text)
 
-          echo "EXECUTION_ARN=${EXECUTION_ARN}" >> "$GITHUB_ENV"
-          echo "Started execution: ${EXECUTION_ARN}"
+      #     echo "EXECUTION_ARN=${EXECUTION_ARN}" >> "$GITHUB_ENV"
+      #     echo "Started execution: ${EXECUTION_ARN}"
 
-      # =====================================================
-      # 18. VERIFY PIPELINE STARTED — DO NOT WAIT
-      # =====================================================
+      # # =====================================================
+      # # 18. VERIFY PIPELINE STARTED — DO NOT WAIT
+      # # =====================================================
 
-      - name: Verify raw-layer pipeline started
-        shell: bash
-        run: |
-          set -euo pipefail
+      # - name: Verify raw-layer pipeline started
+      #   shell: bash
+      #   run: |
+      #     set -euo pipefail
 
-          if [[ -z "${EXECUTION_ARN:-}" || "${EXECUTION_ARN}" == "None" ]]; then
-            echo "ERROR: Step Functions execution ARN was not returned."
-            exit 1
-          fi
+      #     if [[ -z "${EXECUTION_ARN:-}" || "${EXECUTION_ARN}" == "None" ]]; then
+      #       echo "ERROR: Step Functions execution ARN was not returned."
+      #       exit 1
+      #     fi
 
-          aws stepfunctions describe-execution \
-            --execution-arn "${EXECUTION_ARN}" \
-            --region "${AWS_REGION}" \
-            --query '{executionArn:executionArn,status:status,startDate:startDate}' \
-            --output json
+      #     aws stepfunctions describe-execution \
+      #       --execution-arn "${EXECUTION_ARN}" \
+      #       --region "${AWS_REGION}" \
+      #       --query '{executionArn:executionArn,status:status,startDate:startDate}' \
+      #       --output json
 
-          echo "Step Functions execution was started successfully."
-          echo "Execution ARN: ${EXECUTION_ARN}"
-          echo "The workflow will not wait for pipeline completion."
+      #     echo "Step Functions execution was started successfully."
+      #     echo "Execution ARN: ${EXECUTION_ARN}"
+      #     echo "The workflow will not wait for pipeline completion."
 
       # =====================================================
       # 19. CATALOG REGISTRATION
