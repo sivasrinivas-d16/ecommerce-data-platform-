@@ -13,11 +13,13 @@ def validate(spark: SparkSession, bucket: str) -> dict:
     input_path = f"s3://{bucket}/raw/customers/"
 
     required_columns = [
-        "customer_id",
-        "name",
-        "email",
-        "country",
-        "signup_date",
+    "customer_id",
+    "name",
+    "email",
+    "country",
+    "state",
+    "city",
+    "signup_date",
     ]
 
     checks = []
@@ -125,16 +127,19 @@ def validate(spark: SparkSession, bucket: str) -> dict:
 
     add_check("Email Format", invalid_count(df, email_invalid))
 
-    # 8. Country business rule: exactly India.
+    # 8. Country must contain a nonblank value.
     country = F.col("country")
 
     country_invalid = (
         country.isNull()
-        | (country != F.lit("India"))
+        | (F.length(F.trim(country.cast("string"))) == 0)
     )
 
-    add_check("Country Business Rule", invalid_count(df, country_invalid))
-
+    add_check(
+        "Country Validity",
+        invalid_count(df, country_invalid),
+        "Country must not be null or blank",
+    )
     # 9. Signup date: safely parse to date and reject invalid/future dates.
     # Accepts date/timestamp types and common ISO-style string dates.
     signup_type = df.schema["signup_date"].dataType

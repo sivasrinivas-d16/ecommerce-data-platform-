@@ -33,7 +33,7 @@
     },
     {
       "name": "event_timestamp",
-      "type": "timestamp",
+      "type": "string",
       "required": true
     },
     {

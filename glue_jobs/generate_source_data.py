@@ -513,18 +513,27 @@ events = events_base.select(
 
     # For order-related events, use the same customer mapping
     # as the referenced order. Other events use a random customer.
+
     F.format_string(
         "C%05d",
         F.when(
             F.col("event_type").isin(ORDER_EVENT_TYPES),
             customer_number_for_id(F.col("order_num")),
-        ).otherwise(F.col("random_customer_num")),
+        ).otherwise(
+            F.col("random_customer_num")
+        ),
     ).alias("customer_id"),
 
     F.when(
-        F.col("event_type").isin(ORDER_EVENT_TYPES),
-        F.format_string("O%08d", F.col("order_num")),
-    ).otherwise(F.lit(None).cast("string")).alias("order_id"),
+    F.col("event_type").isin(ORDER_EVENT_TYPES),
+        F.format_string(
+            "O%08d",
+            F.col("order_num"),
+        ),
+    ).otherwise(
+        F.lit(None).cast("string")
+    ).alias("order_id"),
+
 
     F.when(
         F.col("event_type").isin(PRODUCT_EVENT_TYPES),
