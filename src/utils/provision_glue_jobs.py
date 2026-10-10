@@ -73,7 +73,7 @@ VALIDATION_MAIN_JOB = "ecommerce-validation-main"
 
 # Main driver remains in the existing validation folder.
 VALIDATION_MAIN_SCRIPT = (
-    f"s3://{S3_BUCKET}/code/src/validation/validation_main.py"
+    f"s3://{S3_BUCKET}/scripts/validation_main.py"
 )
 
 # All five validation modules are packaged into one ZIP.
