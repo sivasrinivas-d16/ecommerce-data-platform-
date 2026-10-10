@@ -4,93 +4,274 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ecommerce-data-platform-deploy
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ap-southeast-2
+  S3_BUCKET: ecommerce-data-platform-version1
+  RAW_LAYER_STATE_MACHINE: ecommerce-raw-layer-pipeline
 
 jobs:
   deploy:
+    name: Deploy and Run Pipeline
     runs-on: ubuntu-latest
 
     steps:
       # =====================================================
-      # Checkout Repository
+      # 1. CHECKOUT REPOSITORY
       # =====================================================
       - name: Checkout repository
         uses: actions/checkout@v5
 
       # =====================================================
-      # Configure AWS Credentials
+      # 2. SET UP PYTHON
+      # =====================================================
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install deployment dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install boto3
+
+      # =====================================================
+      # 3. CONFIGURE AWS CREDENTIALS
       # =====================================================
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ap-southeast-2
+          aws-region: ${{ env.AWS_REGION }}
 
       # =====================================================
-      # Verify AWS Identity
+      # 4. VERIFY AWS IDENTITY
       # =====================================================
       - name: Verify AWS identity
         run: |
+          set -euo pipefail
           aws sts get-caller-identity
 
       # =====================================================
-      # Upload Source Code
+      # 5. CHECK REQUIRED FILES
+      # =====================================================
+      - name: Validate deployment files
+        run: |
+          set -euo pipefail
+
+          required_files=(
+            "glue_jobs/raw_layer_main.py"
+            "ingestion/ingest_customers.py"
+            "ingestion/ingest_products.py"
+            "ingestion/ingest_orders.py"
+            "ingestion/ingest_payments.py"
+            "ingestion/ingest_events.py"
+            "src/utils/register_glue_tables.py"
+            "src/utils/provision_glue_jobs.py"
+            "src/utils/provision_step_function.py"
+          )
+
+          for file in "${required_files[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "ERROR: Required file missing: $file"
+              exit 1
+            fi
+          done
+
+          echo "All required deployment files exist."
+
+      # =====================================================
+      # 6. PACKAGE RAW-LAYER MODULES
+      # =====================================================
+      - name: Package raw-layer modules
+        run: |
+          set -euo pipefail
+
+          mkdir -p build
+
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_DEFLATED
+
+          source = Path("ingestion")
+          destination = Path("build/raw_modules.zip")
+
+          modules = [
+              "ingest_customers.py",
+              "ingest_products.py",
+              "ingest_orders.py",
+              "ingest_payments.py",
+              "ingest_events.py",
+          ]
+
+          with ZipFile(destination, "w", ZIP_DEFLATED) as archive:
+              for module in modules:
+                  archive.write(source / module, arcname=module)
+
+          with ZipFile(destination) as archive:
+              names = archive.namelist()
+              print("Packaged modules:", names)
+
+              missing = set(modules) - set(names)
+              if missing:
+                  raise SystemExit(
+                      f"ZIP is missing required modules: {sorted(missing)}"
+                  )
+          PY
+
+      # =====================================================
+      # 7. UPLOAD RAW-LAYER SCRIPTS
+      # =====================================================
+      - name: Upload raw-layer scripts
+        run: |
+          set -euo pipefail
+
+          # S3 does not require folders to be created manually.
+          # These uploads create or replace the required objects.
+
+          aws s3 cp \
+            glue_jobs/raw_layer_main.py \
+            "s3://${S3_BUCKET}/scripts/raw/raw_layer_main.py"
+
+          aws s3 cp \
+            build/raw_modules.zip \
+            "s3://${S3_BUCKET}/scripts/raw/raw_modules.zip"
+
+      # =====================================================
+      # 8. UPLOAD SOURCE CODE
       # =====================================================
       - name: Upload source code
         run: |
+          set -euo pipefail
+
           aws s3 sync src/ \
-            s3://ecommerce-data-platform-version1/code/src/
+            "s3://${S3_BUCKET}/code/src/"
 
       # =====================================================
-      # Upload Validation + Quality Glue Scripts
-      # =====================================================
-      - name: Upload validation and quality Glue scripts
-        run: |
-          aws s3 sync src/validation_quality/ \
-            s3://ecommerce-data-platform-version1/code/src/validation_quality/
-
-      # =====================================================
-      # Upload Schemas
+      # 9. UPLOAD SCHEMAS
       # =====================================================
       - name: Upload schemas
         run: |
-          aws s3 sync schemas/ \
-          s3://ecommerce-data-platform-version1/code/schemas/
+          set -euo pipefail
+
+          if [ -d schemas ]; then
+            aws s3 sync schemas/ \
+              "s3://${S3_BUCKET}/code/schemas/"
+          else
+            echo "No schemas directory found; skipping."
+          fi
 
       # =====================================================
-      # Register Glue Catalog Tables
-      # =====================================================
-      - name: Register Glue Catalog tables
-        run: |
-          python src/utils/register_glue_tables.py
-
-      # =====================================================
-      # Provision / Update Glue Jobs
-      # =====================================================
-      - name: Provision Glue jobs
-        run: |
-          python src/utils/provision_glue_jobs.py
-
-      # =====================================================
-      # Deploy / Update Step Functions
-      # =====================================================
-      - name: Deploy Step Functions
-        run: |
-          python src/utils/provision_step_function.py
-
-      # =====================================================
-      # Upload Documentation
+      # 10. UPLOAD DOCUMENTATION
       # =====================================================
       - name: Upload documentation
         run: |
-          aws s3 sync docs/ \
-            s3://ecommerce-data-platform-version1/code/docs/
+          set -euo pipefail
+
+          if [ -d docs ]; then
+            aws s3 sync docs/ \
+              "s3://${S3_BUCKET}/code/docs/"
+          else
+            echo "No docs directory found; skipping."
+          fi
 
       # =====================================================
-      # Verify S3 Deployment
+      # 11. VERIFY REQUIRED S3 OBJECTS
       # =====================================================
-      - name: Verify S3 deployment
+      - name: Verify S3 deployment artifacts
         run: |
-          aws s3 ls \
-            s3://ecommerce-data-platform-version1/code/ \
-            --recursive
+          set -euo pipefail
+
+          aws s3api head-object \
+            --bucket "${S3_BUCKET}" \
+            --key scripts/raw/raw_layer_main.py
+
+          aws s3api head-object \
+            --bucket "${S3_BUCKET}" \
+            --key scripts/raw/raw_modules.zip
+
+          aws s3 ls "s3://${S3_BUCKET}/code/src/"
+          aws s3 ls "s3://${S3_BUCKET}/code/schemas/" || true
+
+          echo "Required raw-layer S3 objects are present."
+
+      # =====================================================
+      # 12. REGISTER GLUE CATALOG TABLES
+      # =====================================================
+      - name: Register Glue Catalog tables
+        run: |
+          set -euo pipefail
+          python src/utils/register_glue_tables.py
+
+      # =====================================================
+      # 13. PROVISION / UPDATE GLUE JOBS
+      # =====================================================
+      - name: Provision Glue jobs
+        run: |
+          set -euo pipefail
+          python src/utils/provision_glue_jobs.py
+
+      # =====================================================
+      # 14. VERIFY RAW-LAYER GLUE JOB
+      # =====================================================
+      - name: Verify raw-layer Glue job
+        run: |
+          set -euo pipefail
+
+          aws glue get-job \
+            --job-name ecommerce_raw_layer \
+            --region "${AWS_REGION}" \
+            --query 'Job.{Name:Name,Script:Command.ScriptLocation,Version:GlueVersion}' \
+            --output json
+
+      # =====================================================
+      # 15. DEPLOY / UPDATE STEP FUNCTIONS
+      # =====================================================
+      - name: Deploy Step Functions
+        run: |
+          set -euo pipefail
+          python src/utils/provision_step_function.py
+
+      # =====================================================
+      # 16. VERIFY STATE MACHINE
+      # =====================================================
+      - name: Verify raw-layer state machine
+        run: |
+          set -euo pipefail
+
+          STATE_MACHINE_ARN="arn:aws:states:${AWS_REGION}:$(aws sts get-caller-identity --query Account --output text):stateMachine:${RAW_LAYER_STATE_MACHINE}"
+
+          aws stepfunctions describe-state-machine \
+            --state-machine-arn "${STATE_MACHINE_ARN}" \
+            --region "${AWS_REGION}" \
+            --query '{name:name,status:status,arn:stateMachineArn}' \
+            --output json
+
+          echo "STATE_MACHINE_ARN=${STATE_MACHINE_ARN}" >> "$GITHUB_ENV"
+
+      # =====================================================
+      # 17. START RAW-LAYER EXECUTION
+      # =====================================================
+      - name: Start raw-layer pipeline
+        run: |
+          set -euo pipefail
+
+          EXECUTION_NAME="raw-layer-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          aws stepfunctions start-execution \
+            --state-machine-arn "${STATE_MACHINE_ARN}" \
+            --name "${EXECUTION_NAME}" \
+            --input '{}' \
+            --region "${AWS_REGION}"
+
+          echo "Started execution: ${EXECUTION_NAME}"

@@ -1,5 +1,6 @@
 import json
 import boto3
+from botocore.exceptions import ClientError
 
 
 # =========================================================
@@ -7,11 +8,12 @@ import boto3
 # =========================================================
 
 AWS_REGION = "ap-southeast-2"
+AWS_ACCOUNT_ID = "256130491261"
 
 STATE_MACHINE_NAME = "ecommerce-raw-layer-pipeline"
 
 STEP_FUNCTION_ROLE = (
-    "arn:aws:iam::256130491261:"
+    f"arn:aws:iam::{AWS_ACCOUNT_ID}:"
     "role/StepFunctions-EcommerceRole"
 )
 
@@ -60,16 +62,45 @@ STATE_MACHINE_DEFINITION = {
 
 
 # =========================================================
-# 3. CREATE OR UPDATE STATE MACHINE
+# 3. VERIFY GLUE JOB
+# =========================================================
+
+def verify_glue_job(glue_client):
+    try:
+        response = glue_client.get_job(
+            JobName=RAW_LAYER_GLUE_JOB
+        )
+
+        job = response["Job"]
+        script_location = job["Command"]["ScriptLocation"]
+
+        print(f"Glue job found: {RAW_LAYER_GLUE_JOB}")
+        print(f"Script location: {script_location}")
+
+        if not script_location:
+            raise RuntimeError(
+                "The Glue job has no configured script location."
+            )
+
+    except glue_client.exceptions.EntityNotFoundException as exc:
+        raise RuntimeError(
+            f"Glue job '{RAW_LAYER_GLUE_JOB}' does not exist "
+            f"in AWS region {AWS_REGION}. "
+            "Run the Glue job provisioning script first."
+        ) from exc
+
+
+# =========================================================
+# 4. CREATE OR UPDATE STATE MACHINE
 # =========================================================
 
 def provision_state_machine(sfn_client):
 
     definition = json.dumps(STATE_MACHINE_DEFINITION)
 
-    paginator = sfn_client.get_paginator("list_state_machines")
-
     existing_state_machine = None
+
+    paginator = sfn_client.get_paginator("list_state_machines")
 
     for page in paginator.paginate():
         for state_machine in page["stateMachines"]:
@@ -81,8 +112,9 @@ def provision_state_machine(sfn_client):
             break
 
     if existing_state_machine:
-
-        state_machine_arn = existing_state_machine["stateMachineArn"]
+        state_machine_arn = (
+            existing_state_machine["stateMachineArn"]
+        )
 
         sfn_client.update_state_machine(
             stateMachineArn=state_machine_arn,
@@ -93,7 +125,6 @@ def provision_state_machine(sfn_client):
         print(f"UPDATED: {STATE_MACHINE_NAME}")
 
     else:
-
         response = sfn_client.create_state_machine(
             name=STATE_MACHINE_NAME,
             definition=definition,
@@ -109,7 +140,7 @@ def provision_state_machine(sfn_client):
 
 
 # =========================================================
-# 4. MAIN
+# 5. MAIN
 # =========================================================
 
 def main():
@@ -124,7 +155,11 @@ def main():
 
     session = boto3.Session(region_name=AWS_REGION)
 
+    glue_client = session.client("glue")
     sfn_client = session.client("stepfunctions")
+
+    # Confirm the Glue job exists before deploying its orchestrator.
+    verify_glue_job(glue_client)
 
     state_machine_arn = provision_state_machine(sfn_client)
 
