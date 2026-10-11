@@ -705,19 +705,25 @@ agg_sales_daily = (
 )
 
 
+
 # 7.2 Product performance
+
 product_sales = (
     orders_kpi
     .groupBy("product_id")
     .agg(
-        F.sum("eligible_revenue").alias("eligible_revenue"),
-        F.sum("eligible_units").alias("eligible_units_sold"),
+        F.sum("sales_eligible_revenue").alias(
+            "sales_eligible_revenue"
+        ),
+        F.sum("sales_eligible_units").alias(
+            "sales_eligible_units_sold"
+        ),
         F.countDistinct(
             F.when(
-                F.col("is_eligible_completed_order"),
+                F.col("is_sales_eligible_order"),
                 F.col("order_id"),
             )
-        ).alias("eligible_completed_orders"),
+        ).alias("sales_eligible_orders"),
     )
 )
 
@@ -726,22 +732,24 @@ agg_product_performance = (
     .join(product_sales, "product_id", "left")
     .fillna(
         {
-            "eligible_revenue": 0,
-            "eligible_units_sold": 0,
-            "eligible_completed_orders": 0,
+            "sales_eligible_revenue": 0,
+            "sales_eligible_units_sold": 0,
+            "sales_eligible_orders": 0,
         }
     )
     .withColumn(
         "revenue_rank",
         F.dense_rank().over(
             Window.orderBy(
-                F.col("eligible_revenue").desc_nulls_last()
+                F.col("sales_eligible_revenue").desc_nulls_last()
             )
         ),
     )
 )
 
+
 # 7.3 Customer purchase and activity metrics
+
 order_by_customer = (
     orders_kpi
     .filter(
@@ -752,26 +760,32 @@ order_by_customer = (
     .agg(
         F.countDistinct(
             F.when(
-                F.col("is_eligible_completed_order"),
+                F.col("is_sales_eligible_order"),
                 F.col("order_id"),
             )
-        ).alias("eligible_completed_orders"),
-        F.sum("eligible_revenue").alias(
-            "eligible_customer_revenue"
+        ).alias("sales_eligible_orders"),
+
+        F.sum("sales_eligible_revenue").alias(
+            "sales_eligible_customer_revenue"
         ),
-        F.sum("eligible_units").alias("eligible_units_sold"),
+
+        F.sum("sales_eligible_units").alias(
+            "sales_eligible_units_sold"
+        ),
+
         F.min(
             F.when(
-                F.col("is_eligible_completed_order"),
+                F.col("is_sales_eligible_order"),
                 F.col("order_date"),
             )
-        ).alias("first_eligible_order_date"),
+        ).alias("first_sales_eligible_order_date"),
+
         F.max(
             F.when(
-                F.col("is_eligible_completed_order"),
+                F.col("is_sales_eligible_order"),
                 F.col("order_date"),
             )
-        ).alias("last_eligible_order_date"),
+        ).alias("last_sales_eligible_order_date"),
     )
 )
 
@@ -811,9 +825,9 @@ agg_customer_performance = (
     .join(event_by_customer, "customer_id", "left")
     .fillna(
         {
-            "eligible_completed_orders": 0,
-            "eligible_customer_revenue": 0,
-            "eligible_units_sold": 0,
+            "sales_eligible_orders": 0,
+            "sales_eligible_customer_revenue": 0,
+            "sales_eligible_units_sold": 0,
             "event_count": 0,
             "browsing_event_count": 0,
             "order_event_count": 0,
@@ -822,21 +836,22 @@ agg_customer_performance = (
     )
     .withColumn(
         "is_repeat_customer",
-        F.col("eligible_completed_orders") >= 2,
+        F.col("sales_eligible_orders") >= 2,
     )
     .withColumn(
         "customer_behavior_segment",
         F.when(
-            F.col("eligible_completed_orders") == 0,
-            "NO_ELIGIBLE_PURCHASE",
+            F.col("sales_eligible_orders") == 0,
+            "NO_ELIGIBLE_SALES",
         )
         .when(
-            F.col("eligible_completed_orders") == 1,
-            "ONE_ELIGIBLE_PURCHASE",
+            F.col("sales_eligible_orders") == 1,
+            "ONE_ELIGIBLE_SALE",
         )
         .otherwise("REPEAT_CUSTOMER"),
     )
 )
+
 
 # 7.4 Payments remain independent of orders until a valid relationship
 # is established in the source schema.
