@@ -465,57 +465,19 @@ fact_events = select_existing(
 )
 
 
-# # ------------------------------------------------------------
-# # 5. Order KPI eligibility
-# # ------------------------------------------------------------
-
-# # REVIEW and invalid records remain in facts. They are excluded from
-# # eligible revenue and reported separately in quality-related metrics.
-# orders_kpi = orders.withColumn(
-#     "is_eligible_completed_order",
-#     (F.upper(F.trim(F.col("order_status"))) == "COMPLETED")
-#     & (
-#         F.upper(
-#             F.trim(F.col("order_data_quality_status"))
-#         ) == "VALID"
-#     )
-#     & (F.col("order_amount_valid") == F.lit(True))
-#     & F.col("order_id").isNotNull()
-#     & (F.trim(F.col("order_id")) != ""),
-# )
-
-# orders_kpi = (
-#     orders_kpi
-#     .withColumn(
-#         "eligible_revenue",
-#         F.when(
-#             F.col("is_eligible_completed_order"),
-#             F.col("order_amount"),
-#         ).otherwise(F.lit(0).cast("decimal(18,2)")),
-#     )
-#     .withColumn(
-#         "eligible_units",
-#         F.when(
-#             F.col("is_eligible_completed_order"),
-#             F.col("quantity"),
-#         ).otherwise(F.lit(0).cast("long")),
-#     )
-# )
-
 # ------------------------------------------------------------
-# 5. Sales eligibility
+# 5. Order KPI eligibility
 # ------------------------------------------------------------
-# Keep all source records in the fact tables.
-# Only delivered, paid, quality-valid orders with valid amounts
-# and valid order IDs contribute to sales KPIs.
 
+# REVIEW and invalid records remain in facts. They are excluded from
+# eligible revenue and reported separately in quality-related metrics.
 orders_kpi = orders.withColumn(
     "is_sales_eligible_order",
-    (F.upper(F.trim(F.col("order_status"))) == "DELIVERED")
-    & (F.upper(F.trim(F.col("payment_status"))) == "PAID")
+    (F.upper(F.trim(F.col("order_status"))) == "COMPLETED")
     & (
-        F.upper(F.trim(F.col("order_data_quality_status")))
-        == "VALID"
+        F.upper(
+            F.trim(F.col("order_data_quality_status"))
+        ) == "VALID"
     )
     & (F.col("order_amount_valid") == F.lit(True))
     & F.col("order_id").isNotNull()
@@ -705,19 +667,13 @@ agg_sales_daily = (
 )
 
 
-
 # 7.2 Product performance
-
 product_sales = (
     orders_kpi
     .groupBy("product_id")
     .agg(
-        F.sum("sales_eligible_revenue").alias(
-            "sales_eligible_revenue"
-        ),
-        F.sum("sales_eligible_units").alias(
-            "sales_eligible_units_sold"
-        ),
+        F.sum("sales_eligible_revenue").alias("sales_eligible_revenue"),
+        F.sum("sales_eligible_units").alias("eligible_units_sold"),
         F.countDistinct(
             F.when(
                 F.col("is_sales_eligible_order"),
@@ -733,7 +689,7 @@ agg_product_performance = (
     .fillna(
         {
             "sales_eligible_revenue": 0,
-            "sales_eligible_units_sold": 0,
+            "eligible_units_sold": 0,
             "sales_eligible_orders": 0,
         }
     )
@@ -747,9 +703,7 @@ agg_product_performance = (
     )
 )
 
-
 # 7.3 Customer purchase and activity metrics
-
 order_by_customer = (
     orders_kpi
     .filter(
@@ -764,28 +718,22 @@ order_by_customer = (
                 F.col("order_id"),
             )
         ).alias("sales_eligible_orders"),
-
         F.sum("sales_eligible_revenue").alias(
             "sales_eligible_customer_revenue"
         ),
-
-        F.sum("sales_eligible_units").alias(
-            "sales_eligible_units_sold"
-        ),
-
+        F.sum("sales_eligible_units").alias("eligible_units_sold"),
         F.min(
             F.when(
                 F.col("is_sales_eligible_order"),
                 F.col("order_date"),
             )
-        ).alias("first_sales_eligible_order_date"),
-
+        ).alias("first_eligible_order_date"),
         F.max(
             F.when(
                 F.col("is_sales_eligible_order"),
                 F.col("order_date"),
             )
-        ).alias("last_sales_eligible_order_date"),
+        ).alias("last_eligible_order_date"),
     )
 )
 
@@ -827,7 +775,7 @@ agg_customer_performance = (
         {
             "sales_eligible_orders": 0,
             "sales_eligible_customer_revenue": 0,
-            "sales_eligible_units_sold": 0,
+            "eligible_units_sold": 0,
             "event_count": 0,
             "browsing_event_count": 0,
             "order_event_count": 0,
@@ -842,16 +790,15 @@ agg_customer_performance = (
         "customer_behavior_segment",
         F.when(
             F.col("sales_eligible_orders") == 0,
-            "NO_ELIGIBLE_SALES",
+            "NO_ELIGIBLE_PURCHASE",
         )
         .when(
             F.col("sales_eligible_orders") == 1,
-            "ONE_ELIGIBLE_SALE",
+            "ONE_ELIGIBLE_PURCHASE",
         )
         .otherwise("REPEAT_CUSTOMER"),
     )
 )
-
 
 # 7.4 Payments remain independent of orders until a valid relationship
 # is established in the source schema.
