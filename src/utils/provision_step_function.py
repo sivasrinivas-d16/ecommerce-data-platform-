@@ -130,15 +130,19 @@ STATE_MACHINE_DEFINITION: dict[str, Any] = {
             }],
             "Next": "Check Validation Gate",
         },
-        "Check Validation Gate": {
-            "Type": "Choice",
-            "Choices": [{
-                "Variable": "$.validation_gate_result.Payload.status",
-                "StringEquals": "PASS",
-                "Next": "Run Refined Layer",
-            }],
-            "Default": "Validation Gate Blocked",
-        },
+        
+            "Check Validation Gate": {
+                "Type": "Choice",
+                "Choices": [
+                    {
+                        "Variable": "$.validation_gate_result.Payload.decision",
+                        "StringEquals": "PASS",
+                        "Next": "Run Refined Layer"
+                    }
+                ],
+                "Default": "Validation Gate Blocked"
+            },
+
         "Run Refined Layer": {
             "Type": "Task",
             "Resource": "arn:aws:states:::glue:startJobRun.sync",

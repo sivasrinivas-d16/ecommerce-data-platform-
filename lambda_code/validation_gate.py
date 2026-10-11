@@ -25,7 +25,7 @@ DATASETS = {
     "events",
 }
 
-MAX_FAILED_COLUMNS = 4
+MAX_FAILED_COLUMNS = 3
 
 # Configure these names to match the actual columns in each dataset.
 # They are used to identify columns referenced by failed validation checks.
@@ -55,8 +55,9 @@ COLUMN_NAMES = {
 }
 
 
+
 def read_json_objects(prefix):
-    """Read every JSON data object under an S3 prefix."""
+    """Read JSON objects from S3, skipping empty Spark part files."""
     paginator = s3.get_paginator("list_objects_v2")
     records = []
 
@@ -68,8 +69,20 @@ def read_json_objects(prefix):
             if not key.lower().endswith(".json"):
                 continue
 
+            # Empty Spark output files contain no records.
+            if obj.get("Size", 0) == 0:
+                logger.warning("Skipping empty JSON object: s3://%s/%s",
+                               BUCKET, key)
+                continue
+
             response = s3.get_object(Bucket=BUCKET, Key=key)
-            body = response["Body"].read().decode("utf-8")
+            body = response["Body"].read().decode("utf-8-sig")
+
+            # Also handle files containing only whitespace.
+            if not body.strip():
+                logger.warning("Skipping whitespace-only JSON object: s3://%s/%s",
+                               BUCKET, key)
+                continue
 
             try:
                 parsed = json.loads(body)
@@ -78,7 +91,6 @@ def read_json_objects(prefix):
                     f"Invalid JSON in s3://{BUCKET}/{key}: {exc}"
                 ) from exc
 
-            # Support both a single JSON object and a JSON array.
             if isinstance(parsed, dict):
                 records.append((key, parsed))
             elif isinstance(parsed, list):
@@ -94,6 +106,7 @@ def read_json_objects(prefix):
                 )
 
     return records
+
 
 
 def validation_column_from_check(check_name, dataset):
