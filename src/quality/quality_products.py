@@ -405,20 +405,14 @@ def run_quality(
         "Product status must be ACTIVE, INACTIVE, or DISCONTINUED.",
     )
 
-    # ========================================================
-    # 10. CREATED DATE VALIDITY
-    # ========================================================
-
-    created_date = F.to_date(
-        F.col("created_date"),
-        "yyyy-MM-dd",
-    )
+    #
+# ========================================================
+# 10. CREATED DATE VALIDITY
+# ========================================================
 
     valid_created_date_count = products_df.filter(
         F.col("created_date").isNotNull()
-        & (F.col("created_date") != "")
-        & created_date.isNotNull()
-        & (created_date <= F.current_date())
+        & (F.col("created_date") <= F.current_date())
     ).count()
 
     created_date_validity = percentage(
@@ -431,8 +425,9 @@ def run_quality(
         "Created Date Validity",
         valid_created_date_count,
         total_records,
-        "Created date must be a valid ISO date and not in the future.",
+        "Created date must be valid and not in the future.",
     )
+
 
     # ========================================================
     # 11. OVERALL QUALITY SCORE

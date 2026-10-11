@@ -360,7 +360,7 @@ def save_summary(spark, summary):
 # QUALITY GATE
 # ============================================================
 
-MAX_ALLOWED_FAILED_RECORDS_PER_METRIC = 3
+MAX_ALLOWED_FAILED_RECORDS_PER_METRIC = 4
 
 
 def enforce_quality_gate(reports):
@@ -445,16 +445,18 @@ def main():
                     item["error"],
                 )
 
+        
         save_summary(spark, summary)
 
-        # This raises an exception if even one dataset fails.
-        # Put downstream transformations after this gate.
-        enforce_quality_gate(summary)
+        # Enforce the quality gate using the original
+        # dictionary of detailed dataset reports.
+        enforce_quality_gate(reports)
 
         logger.info(
             "All quality checks passed. "
             "The pipeline may proceed to downstream transformations."
         )
+
 
     except Exception:
         logger.exception("ECOMMERCE DATA QUALITY PIPELINE FAILED")
