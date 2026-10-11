@@ -465,16 +465,23 @@ jobs:
             --region "${AWS_REGION}" \
             --query 'Job.{Name:Name,Role:Role,Script:Command.ScriptLocation,Version:GlueVersion}' \
             --output json
+      
       - name: Verify deployed Lambda
         shell: bash
+        env:
+          LAMBDA_NAME: ecommerce-validation-gate
+          AWS_REGION: ap-southeast-2
         run: |
           set -euo pipefail
+
           aws lambda get-function \
             --function-name "${LAMBDA_NAME}" \
             --region "${AWS_REGION}" \
             --query 'Configuration.{FunctionName:FunctionName,Runtime:Runtime,Handler:Handler,Role:Role,State:State,Timeout:Timeout}' \
             --output json
+
           echo "Validation-gate Lambda deployment verified."
+
       # =====================================================
       # 14. VERIFY RAW-LAYER GLUE JOB
       # =====================================================
