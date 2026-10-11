@@ -465,19 +465,57 @@ fact_events = select_existing(
 )
 
 
-# ------------------------------------------------------------
-# 5. Order KPI eligibility
-# ------------------------------------------------------------
+# # ------------------------------------------------------------
+# # 5. Order KPI eligibility
+# # ------------------------------------------------------------
 
-# REVIEW and invalid records remain in facts. They are excluded from
-# eligible revenue and reported separately in quality-related metrics.
+# # REVIEW and invalid records remain in facts. They are excluded from
+# # eligible revenue and reported separately in quality-related metrics.
+# orders_kpi = orders.withColumn(
+#     "is_eligible_completed_order",
+#     (F.upper(F.trim(F.col("order_status"))) == "COMPLETED")
+#     & (
+#         F.upper(
+#             F.trim(F.col("order_data_quality_status"))
+#         ) == "VALID"
+#     )
+#     & (F.col("order_amount_valid") == F.lit(True))
+#     & F.col("order_id").isNotNull()
+#     & (F.trim(F.col("order_id")) != ""),
+# )
+
+# orders_kpi = (
+#     orders_kpi
+#     .withColumn(
+#         "eligible_revenue",
+#         F.when(
+#             F.col("is_eligible_completed_order"),
+#             F.col("order_amount"),
+#         ).otherwise(F.lit(0).cast("decimal(18,2)")),
+#     )
+#     .withColumn(
+#         "eligible_units",
+#         F.when(
+#             F.col("is_eligible_completed_order"),
+#             F.col("quantity"),
+#         ).otherwise(F.lit(0).cast("long")),
+#     )
+# )
+
+# ------------------------------------------------------------
+# 5. Sales eligibility
+# ------------------------------------------------------------
+# Keep all source records in the fact tables.
+# Only delivered, paid, quality-valid orders with valid amounts
+# and valid order IDs contribute to sales KPIs.
+
 orders_kpi = orders.withColumn(
-    "is_eligible_completed_order",
-    (F.upper(F.trim(F.col("order_status"))) == "COMPLETED")
+    "is_sales_eligible_order",
+    (F.upper(F.trim(F.col("order_status"))) == "DELIVERED")
+    & (F.upper(F.trim(F.col("payment_status"))) == "PAID")
     & (
-        F.upper(
-            F.trim(F.col("order_data_quality_status"))
-        ) == "VALID"
+        F.upper(F.trim(F.col("order_data_quality_status")))
+        == "VALID"
     )
     & (F.col("order_amount_valid") == F.lit(True))
     & F.col("order_id").isNotNull()
@@ -487,16 +525,16 @@ orders_kpi = orders.withColumn(
 orders_kpi = (
     orders_kpi
     .withColumn(
-        "eligible_revenue",
+        "sales_eligible_revenue",
         F.when(
-            F.col("is_eligible_completed_order"),
+            F.col("is_sales_eligible_order"),
             F.col("order_amount"),
         ).otherwise(F.lit(0).cast("decimal(18,2)")),
     )
     .withColumn(
-        "eligible_units",
+        "sales_eligible_units",
         F.when(
-            F.col("is_eligible_completed_order"),
+            F.col("is_sales_eligible_order"),
             F.col("quantity"),
         ).otherwise(F.lit(0).cast("long")),
     )
@@ -604,35 +642,51 @@ integrated_orders = (
 # 7. Dashboard aggregates
 # ------------------------------------------------------------
 
-# 7.1 Daily sales: eligible revenue only
+
+# 7.1 Daily sales: delivered and paid orders passing validation
+
 agg_sales_daily = (
     orders_kpi
     .groupBy("order_date")
     .agg(
         F.countDistinct(
             F.when(
-                F.col("is_eligible_completed_order"),
+                F.col("is_sales_eligible_order"),
                 F.col("order_id"),
             )
-        ).alias("eligible_completed_orders"),
-        F.sum("eligible_revenue").alias("eligible_revenue"),
-        F.sum("eligible_units").alias("eligible_units_sold"),
+        ).alias("sales_eligible_orders"),
+
+        F.sum("sales_eligible_revenue").alias(
+            "sales_eligible_revenue"
+        ),
+
+        F.sum("sales_eligible_units").alias(
+            "sales_eligible_units_sold"
+        ),
+
         F.countDistinct("order_id").alias(
             "all_distinct_orders"
         ),
+
         F.countDistinct(
             F.when(
-                F.upper(F.col("order_status")) == "COMPLETED",
+                (F.upper(F.trim(F.col("order_status"))) == "DELIVERED")
+                & (
+                    F.upper(F.trim(F.col("payment_status")))
+                    == "PAID"
+                ),
                 F.col("order_id"),
             )
-        ).alias("completed_orders_before_quality_filter"),
+        ).alias("delivered_paid_orders_before_quality_filter"),
+
         F.countDistinct(
             F.when(
-                F.upper(F.col("order_data_quality_status"))
+                F.upper(F.trim(F.col("order_data_quality_status")))
                 != "VALID",
                 F.col("order_id"),
             )
         ).alias("orders_not_valid_quality"),
+
         F.countDistinct(
             F.when(
                 F.col("order_amount_valid") == F.lit(False),
@@ -643,12 +697,13 @@ agg_sales_daily = (
     .withColumn(
         "average_order_value",
         F.when(
-            F.col("eligible_completed_orders") > 0,
-            F.col("eligible_revenue")
-            / F.col("eligible_completed_orders"),
+            F.col("sales_eligible_orders") > 0,
+            F.col("sales_eligible_revenue")
+            / F.col("sales_eligible_orders"),
         ),
     )
 )
+
 
 # 7.2 Product performance
 product_sales = (
