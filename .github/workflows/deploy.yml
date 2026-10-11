@@ -20,6 +20,7 @@ env:
   RAW_LAYER_STATE_MACHINE: ecommerce-raw-layer-pipeline
   SOURCE_GENERATION_GLUE_JOB: ecommerce_generate_source_data
   RAW_LAYER_GLUE_JOB: ecommerce_raw_layer
+  CURATED_LAYER_GLUE_JOB: ecommerce-curated-layer
 
 jobs:
   deploy:
@@ -99,6 +100,7 @@ jobs:
             "src/quality/quality_payments.py"
             "src/quality/quality_events.py"
             "glue_jobs/refined_layer_main.py"
+            "glue_jobs/curated_layer_main.py"
             "src/transformation/transform_customers.py"
             "src/transformation/transform_products.py"
             "src/transformation/transform_orders.py"
@@ -147,6 +149,7 @@ jobs:
             src/quality/quality_payments.py \
             src/quality/quality_events.py \
             glue_jobs/refined_layer_main.py \
+            glue_jobs/curated_layer_main.py \
             src/transformation/transform_customers.py \
             src/transformation/transform_products.py \
             src/transformation/transform_orders.py \
@@ -296,6 +299,11 @@ jobs:
             glue_jobs/refined_layer_main.py \
             "s3://${S3_BUCKET}/scripts/refined_layer_main.py" \
             --region "${AWS_REGION}"
+
+          aws s3 cp \
+            glue_jobs/curated_layer_main.py \
+            "s3://${S3_BUCKET}/scripts/curated_layer_main.py" \
+            --region "${AWS_REGION}"
           aws s3 cp \
             build/refined_modules.zip \
             "s3://${S3_BUCKET}/scripts/refined_modules.zip" \
@@ -430,6 +438,13 @@ jobs:
             --bucket "${S3_BUCKET}" \
             --key scripts/quality_modules.zip \
             --region "${AWS_REGION}"
+
+          echo "Verifying curated-layer script..."
+          aws s3api head-object \
+            --bucket "${S3_BUCKET}" \
+            --key scripts/curated_layer_main.py \
+            --region "${AWS_REGION}"
+
           echo "All required S3 objects verified successfully."
 
       # =====================================================
@@ -442,6 +457,17 @@ jobs:
           set -euo pipefail
 
           python src/utils/provision_glue_jobs.py
+
+      - name: Verify curated-layer Glue job
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          aws glue get-job \
+            --job-name "${CURATED_LAYER_GLUE_JOB}" \
+            --region "${AWS_REGION}" \
+            --query 'Job.{Name:Name,Role:Role,Script:Command.ScriptLocation,Version:GlueVersion}' \
+            --output json
 
       - name: Deploy Lambda and IAM resources
         shell: bash
@@ -535,47 +561,47 @@ jobs:
       # 17. START THE PIPELINE
       # =====================================================
 
-      - name: Start raw-layer pipeline
-        shell: bash
-        run: |
-          set -euo pipefail
+      # - name: Start raw-layer pipeline
+      #   shell: bash
+      #   run: |
+      #     set -euo pipefail
 
-          EXECUTION_NAME="raw-layer-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+      #     EXECUTION_NAME="raw-layer-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
-          EXECUTION_ARN=$(aws stepfunctions start-execution \
-            --state-machine-arn "${STATE_MACHINE_ARN}" \
-            --name "${EXECUTION_NAME}" \
-            --input '{}' \
-            --region "${AWS_REGION}" \
-            --query executionArn \
-            --output text)
+      #     EXECUTION_ARN=$(aws stepfunctions start-execution \
+      #       --state-machine-arn "${STATE_MACHINE_ARN}" \
+      #       --name "${EXECUTION_NAME}" \
+      #       --input '{}' \
+      #       --region "${AWS_REGION}" \
+      #       --query executionArn \
+      #       --output text)
 
-          echo "EXECUTION_ARN=${EXECUTION_ARN}" >> "$GITHUB_ENV"
-          echo "Started execution: ${EXECUTION_ARN}"
+      #     echo "EXECUTION_ARN=${EXECUTION_ARN}" >> "$GITHUB_ENV"
+      #     echo "Started execution: ${EXECUTION_ARN}"
 
-      # =====================================================
-      # 18. VERIFY PIPELINE STARTED — DO NOT WAIT
-      # =====================================================
+      # # =====================================================
+      # # 18. VERIFY PIPELINE STARTED — DO NOT WAIT
+      # # =====================================================
 
-      - name: Verify raw-layer pipeline started
-        shell: bash
-        run: |
-          set -euo pipefail
+      # - name: Verify raw-layer pipeline started
+      #   shell: bash
+      #   run: |
+      #     set -euo pipefail
 
-          if [[ -z "${EXECUTION_ARN:-}" || "${EXECUTION_ARN}" == "None" ]]; then
-            echo "ERROR: Step Functions execution ARN was not returned."
-            exit 1
-          fi
+      #     if [[ -z "${EXECUTION_ARN:-}" || "${EXECUTION_ARN}" == "None" ]]; then
+      #       echo "ERROR: Step Functions execution ARN was not returned."
+      #       exit 1
+      #     fi
 
-          aws stepfunctions describe-execution \
-            --execution-arn "${EXECUTION_ARN}" \
-            --region "${AWS_REGION}" \
-            --query '{executionArn:executionArn,status:status,startDate:startDate}' \
-            --output json
+      #     aws stepfunctions describe-execution \
+      #       --execution-arn "${EXECUTION_ARN}" \
+      #       --region "${AWS_REGION}" \
+      #       --query '{executionArn:executionArn,status:status,startDate:startDate}' \
+      #       --output json
 
-          echo "Step Functions execution was started successfully."
-          echo "Execution ARN: ${EXECUTION_ARN}"
-          echo "The workflow will not wait for pipeline completion."
+      #     echo "Step Functions execution was started successfully."
+      #     echo "Execution ARN: ${EXECUTION_ARN}"
+      #     echo "The workflow will not wait for pipeline completion."
 
       # =====================================================
       # 19. CATALOG REGISTRATION

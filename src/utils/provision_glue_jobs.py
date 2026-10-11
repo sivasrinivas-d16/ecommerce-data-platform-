@@ -477,6 +477,89 @@ def provision_refined_main_job():
     )
 
 # ============================================================
+# 23. CURATED ANALYTICAL MODEL GLUE JOB
+# ============================================================
+
+CURATED_MAIN_JOB = "ecommerce-curated-layer"
+
+CURATED_MAIN_SCRIPT = (
+    f"s3://{S3_BUCKET}/scripts/curated_layer_main.py"
+)
+
+
+# ============================================================
+# 24. VERIFY CURATED SCRIPT IN S3
+# ============================================================
+
+def verify_curated_files():
+    required_keys = [
+        "scripts/curated_layer_main.py",
+    ]
+
+    for key in required_keys:
+        try:
+            s3_client.head_object(
+                Bucket=S3_BUCKET,
+                Key=key,
+            )
+
+            print(
+                f"Curated file verified: "
+                f"s3://{S3_BUCKET}/{key}"
+            )
+
+        except ClientError as error:
+            error_code = error.response.get(
+                "Error", {}
+            ).get("Code", "")
+
+            if error_code in (
+                "404",
+                "NoSuchKey",
+                "NotFound",
+            ):
+                raise FileNotFoundError(
+                    f"Required curated script is missing: "
+                    f"s3://{S3_BUCKET}/{key}. "
+                    f"Upload the script before provisioning."
+                ) from error
+
+            raise
+
+
+# ============================================================
+# 25. PROVISION CURATED MAIN GLUE JOB
+# ============================================================
+
+def provision_curated_main_job():
+    print("Checking curated script in S3...")
+
+    verify_curated_files()
+
+    curated_arguments = {
+        "--enable-glue-datacatalog": "true",
+        "--enable-metrics": "true",
+        "--enable-continuous-cloudwatch-log": "true",
+        "--enable-job-insights": "true",
+        "--job-bookmark-option": "job-bookmark-disable",
+    }
+
+    create_or_update_job(
+        job_name=CURATED_MAIN_JOB,
+        script_location=CURATED_MAIN_SCRIPT,
+        extra_arguments=curated_arguments,
+        worker_type="G.1X",
+        number_of_workers=5,
+        timeout=180,
+    )
+
+    print(
+        f"Curated Glue job provisioned: "
+        f"{CURATED_MAIN_JOB}"
+    )
+
+
+# ============================================================
 # 20. MAIN
 # ============================================================
 
@@ -500,12 +583,12 @@ def main():
     print("\nProvisioning refined main job...")
     provision_refined_main_job()
 
+    print("\nProvisioning curated analytical model job...")
+    provision_curated_main_job()
+
     print("\n" + "=" * 70)
     print("GLUE JOB PROVISIONING COMPLETED")
     print("=" * 70)
-
-if __name__ == "__main__":
-    main()
 
 
 if __name__ == "__main__":

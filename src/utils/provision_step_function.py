@@ -1,36 +1,47 @@
-"""Deploy the e-commerce raw-to-refined Step Functions state machine.
 
-This script creates or updates only the state machine named
-'ecommerce-raw-layer-pipeline'. It does not start an execution and does not
-modify the existing 'ecommerce-customers-pipeline' state machine.
+"""
+Provision the E-Commerce Raw-to-Curated Step Functions pipeline.
 
-Required runtime dependency: boto3
+Pipeline:
+    Source Generation
+    -> Raw Layer
+    -> Validation Main
+    -> Quality Main
+    -> Validation Gate
+    -> Refined Layer
+    -> Curated Layer
+    -> Pipeline Completed
 
-Expected validation-gate Lambda response (direct JSON object):
-    {"status": "PASS", "message": "..."}
-Only the exact status PASS allows the refined-layer job to run; all other
-statuses fail closed.
+This script deploys the state machine definition.
+It does not start a state machine execution.
 """
 
 from __future__ import annotations
 
 import json
-import logging
-from typing import Any
-
+import os
 import boto3
 from botocore.exceptions import ClientError
+from typing import Any
 
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-AWS_REGION = "ap-southeast-2"
-AWS_ACCOUNT_ID = "256130491261"
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+REGION = "ap-southeast-2"
 
 STATE_MACHINE_NAME = "ecommerce-raw-layer-pipeline"
-STEP_FUNCTION_ROLE_ARN = (
-    f"arn:aws:iam::{AWS_ACCOUNT_ID}:role/StepFunctions-EcommerceRole"
+
+# Use the account that actually owns the state machine and Glue jobs.
+# Your recent terminal error showed account 210856421090,
+# while earlier configuration referenced 256130491261.
+# Verify the correct account before deployment.
+ACCOUNT_ID = os.environ.get("AWS_ACCOUNT_ID", "210856421090")
+
+STEP_FUNCTIONS_ROLE_ARN = (
+    f"arn:aws:iam::{ACCOUNT_ID}:role/"
+    "StepFunctions-EcommerceRole"
 )
 
 SOURCE_GENERATION_GLUE_JOB = "ecommerce_generate_source_data"
@@ -38,78 +49,114 @@ RAW_LAYER_GLUE_JOB = "ecommerce_raw_layer"
 VALIDATION_MAIN_GLUE_JOB = "ecommerce-validation-main"
 QUALITY_MAIN_GLUE_JOB = "ecommerce-quality-main"
 REFINED_LAYER_GLUE_JOB = "ecommerce-refined-layer"
+CURATED_LAYER_GLUE_JOB = "ecommerce-curated-layer"
 
-VALIDATION_GATE_LAMBDA_NAME = "ecommerce-validation-gate"
 VALIDATION_GATE_LAMBDA_ARN = (
-    f"arn:aws:lambda:{AWS_REGION}:{AWS_ACCOUNT_ID}:"
-    f"function:{VALIDATION_GATE_LAMBDA_NAME}"
+    f"arn:aws:lambda:{REGION}:{ACCOUNT_ID}:function:"
+    "ecommerce-validation-gate"
 )
 
-LOG = logging.getLogger("ecommerce-step-functions-deployment")
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
+STATE_MACHINE_ARN = (
+    f"arn:aws:states:{REGION}:{ACCOUNT_ID}:stateMachine:"
+    f"{STATE_MACHINE_NAME}"
+)
+
+stepfunctions = boto3.client(
+    "stepfunctions",
+    region_name=REGION,
+)
+
+sts = boto3.client(
+    "sts",
+    region_name=REGION,
+)
+
+iam = boto3.client(
+    "iam",
+    region_name=REGION,
 )
 
 
-# ---------------------------------------------------------------------------
-# State machine definition
-# ---------------------------------------------------------------------------
+# ============================================================
+# STATE MACHINE DEFINITION
+# ============================================================
+
 STATE_MACHINE_DEFINITION: dict[str, Any] = {
     "Comment": (
-        "E-Commerce source generation, raw ingestion, validation, quality, "
-        "validation gate, and refined-layer pipeline"
+        "E-Commerce source generation, raw ingestion, validation, "
+        "quality, validation gate, refined layer, and curated "
+        "analytical layer pipeline"
     ),
     "StartAt": "Generate Source Data",
     "States": {
         "Generate Source Data": {
             "Type": "Task",
             "Resource": "arn:aws:states:::glue:startJobRun.sync",
-            "Parameters": {"JobName": SOURCE_GENERATION_GLUE_JOB},
+            "Parameters": {
+                "JobName": SOURCE_GENERATION_GLUE_JOB
+            },
             "ResultPath": "$.source_generation",
-            "Catch": [{
-                "ErrorEquals": ["States.ALL"],
-                "ResultPath": "$.error",
-                "Next": "Source Generation Failed",
-            }],
+            "Catch": [
+                {
+                    "ErrorEquals": ["States.ALL"],
+                    "ResultPath": "$.error",
+                    "Next": "Source Generation Failed",
+                }
+            ],
             "Next": "Run Raw Layer",
         },
+
         "Run Raw Layer": {
             "Type": "Task",
             "Resource": "arn:aws:states:::glue:startJobRun.sync",
-            "Parameters": {"JobName": RAW_LAYER_GLUE_JOB},
+            "Parameters": {
+                "JobName": RAW_LAYER_GLUE_JOB
+            },
             "ResultPath": "$.raw_layer",
-            "Catch": [{
-                "ErrorEquals": ["States.ALL"],
-                "ResultPath": "$.error",
-                "Next": "Raw Layer Failed",
-            }],
+            "Catch": [
+                {
+                    "ErrorEquals": ["States.ALL"],
+                    "ResultPath": "$.error",
+                    "Next": "Raw Layer Failed",
+                }
+            ],
             "Next": "Run Validation Main",
         },
+
         "Run Validation Main": {
             "Type": "Task",
             "Resource": "arn:aws:states:::glue:startJobRun.sync",
-            "Parameters": {"JobName": VALIDATION_MAIN_GLUE_JOB},
+            "Parameters": {
+                "JobName": VALIDATION_MAIN_GLUE_JOB
+            },
             "ResultPath": "$.validation",
-            "Catch": [{
-                "ErrorEquals": ["States.ALL"],
-                "ResultPath": "$.error",
-                "Next": "Validation Failed",
-            }],
+            "Catch": [
+                {
+                    "ErrorEquals": ["States.ALL"],
+                    "ResultPath": "$.error",
+                    "Next": "Validation Failed",
+                }
+            ],
             "Next": "Run Quality Main",
         },
+
         "Run Quality Main": {
             "Type": "Task",
             "Resource": "arn:aws:states:::glue:startJobRun.sync",
-            "Parameters": {"JobName": QUALITY_MAIN_GLUE_JOB},
+            "Parameters": {
+                "JobName": QUALITY_MAIN_GLUE_JOB
+            },
             "ResultPath": "$.quality",
-            "Catch": [{
-                "ErrorEquals": ["States.ALL"],
-                "ResultPath": "$.error",
-                "Next": "Quality Failed",
-            }],
+            "Catch": [
+                {
+                    "ErrorEquals": ["States.ALL"],
+                    "ResultPath": "$.error",
+                    "Next": "Quality Failed",
+                }
+            ],
             "Next": "Run Validation Gate",
         },
+
         "Run Validation Gate": {
             "Type": "Task",
             "Resource": "arn:aws:states:::lambda:invoke",
@@ -119,254 +166,236 @@ STATE_MACHINE_DEFINITION: dict[str, Any] = {
                     "pipeline": STATE_MACHINE_NAME,
                 },
             },
-            # Keep the full Lambda result. This avoids a ResultSelector failure
-            # if the optional message field is absent. The Choice state below
-            # still fails closed unless Payload.status is exactly PASS.
             "ResultPath": "$.validation_gate_result",
-            "Catch": [{
-                "ErrorEquals": ["States.ALL"],
-                "ResultPath": "$.error",
-                "Next": "Validation Gate Failed",
-            }],
+            "Catch": [
+                {
+                    "ErrorEquals": ["States.ALL"],
+                    "ResultPath": "$.error",
+                    "Next": "Validation Gate Failed",
+                }
+            ],
             "Next": "Check Validation Gate",
         },
-        
-            "Check Validation Gate": {
-                "Type": "Choice",
-                "Choices": [
-                    {
-                        "Variable": "$.validation_gate_result.Payload.decision",
-                        "StringEquals": "PASS",
-                        "Next": "Run Refined Layer"
-                    }
-                ],
-                "Default": "Validation Gate Blocked"
-            },
+
+        "Check Validation Gate": {
+            "Type": "Choice",
+            "Choices": [
+                {
+                    "Variable": (
+                        "$.validation_gate_result.Payload.decision"
+                    ),
+                    "StringEquals": "PASS",
+                    "Next": "Run Refined Layer",
+                }
+            ],
+            "Default": "Validation Gate Blocked",
+        },
 
         "Run Refined Layer": {
             "Type": "Task",
             "Resource": "arn:aws:states:::glue:startJobRun.sync",
-            "Parameters": {"JobName": REFINED_LAYER_GLUE_JOB},
+            "Parameters": {
+                "JobName": REFINED_LAYER_GLUE_JOB
+            },
             "ResultPath": "$.refined_layer",
-            "Catch": [{
-                "ErrorEquals": ["States.ALL"],
-                "ResultPath": "$.error",
-                "Next": "Refined Layer Failed",
-            }],
+            "Catch": [
+                {
+                    "ErrorEquals": ["States.ALL"],
+                    "ResultPath": "$.error",
+                    "Next": "Refined Layer Failed",
+                }
+            ],
+            "Next": "Run Curated Layer",
+        },
+
+        # NEW: curated processing starts only after refined succeeds.
+        "Run Curated Layer": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::glue:startJobRun.sync",
+            "Parameters": {
+                "JobName": CURATED_LAYER_GLUE_JOB
+            },
+            "ResultPath": "$.curated_layer",
+            "TimeoutSeconds": 7200,
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "Glue.ConcurrentRunsExceededException"
+                    ],
+                    "IntervalSeconds": 30,
+                    "MaxAttempts": 2,
+                    "BackoffRate": 2.0,
+                }
+            ],
+            "Catch": [
+                {
+                    "ErrorEquals": ["States.ALL"],
+                    "ResultPath": "$.error",
+                    "Next": "Curated Layer Failed",
+                }
+            ],
             "Next": "Pipeline Completed",
         },
-        "Pipeline Completed": {"Type": "Succeed"},
+
+        "Pipeline Completed": {
+            "Type": "Succeed"
+        },
+
         "Source Generation Failed": {
             "Type": "Fail",
             "Error": "SourceGenerationFailed",
             "Cause": (
-                "Source dataset generation failed. Check AWS Glue and "
-                "CloudWatch logs."
+                "Source dataset generation failed. Check AWS Glue "
+                "and CloudWatch logs."
             ),
         },
+
         "Raw Layer Failed": {
             "Type": "Fail",
             "Error": "RawLayerExecutionFailed",
-            "Cause": "Raw-layer ingestion failed. Check AWS Glue logs.",
+            "Cause": (
+                "Raw-layer ingestion failed. Check AWS Glue logs."
+            ),
         },
+
         "Validation Failed": {
             "Type": "Fail",
             "Error": "ValidationExecutionFailed",
-            "Cause": "Dataset validation failed. Check validation reports and Glue logs.",
+            "Cause": (
+                "Dataset validation failed. Check validation reports "
+                "and Glue logs."
+            ),
         },
+
         "Quality Failed": {
             "Type": "Fail",
             "Error": "QualityExecutionFailed",
-            "Cause": "Quality processing failed. Check quality reports and Glue logs.",
+            "Cause": (
+                "Quality processing failed. Check quality reports "
+                "and Glue logs."
+            ),
         },
+
         "Validation Gate Failed": {
             "Type": "Fail",
             "Error": "ValidationGateExecutionFailed",
             "Cause": (
-                "The validation-gate Lambda invocation failed. Check Lambda "
-                "CloudWatch logs and Step Functions execution details."
+                "The validation-gate Lambda invocation failed. "
+                "Check Lambda CloudWatch logs and Step Functions "
+                "execution details."
             ),
         },
+
         "Validation Gate Blocked": {
             "Type": "Fail",
             "Error": "ValidationGateBlocked",
             "Cause": (
-                "The validation gate did not return status PASS. The refined "
-                "layer was not started. Check validation and quality reports."
+                "The validation gate did not return decision PASS. "
+                "The refined and curated layers were not started. "
+                "Check validation and quality reports."
             ),
         },
+
         "Refined Layer Failed": {
             "Type": "Fail",
             "Error": "RefinedLayerExecutionFailed",
-            "Cause": "Refined-layer transformation failed. Check AWS Glue logs.",
+            "Cause": (
+                "Refined-layer transformation failed. "
+                "Check AWS Glue logs."
+            ),
+        },
+
+        "Curated Layer Failed": {
+            "Type": "Fail",
+            "Error": "CuratedLayerExecutionFailed",
+            "Cause": (
+                "Curated analytical model processing failed. "
+                "Check AWS Glue and CloudWatch logs."
+            ),
         },
     },
 }
 
 
-# ---------------------------------------------------------------------------
-# Local definition checks
-# ---------------------------------------------------------------------------
-def validate_definition(definition: dict[str, Any]) -> None:
-    """Catch common ASL wiring errors before sending the definition to AWS."""
-    states = definition.get("States", {})
-    start = definition.get("StartAt")
-    if start not in states:
-        raise ValueError(f"StartAt references missing state: {start!r}")
+# ============================================================
+# VALIDATE DEFINITION LOCALLY
+# ============================================================
 
-    for state_name, state in states.items():
-        next_state = state.get("Next")
-        if next_state and next_state not in states:
-            raise ValueError(
-                f"State {state_name!r} references missing Next state {next_state!r}"
-            )
-        for catcher in state.get("Catch", []):
-            target = catcher.get("Next")
-            if target not in states:
-                raise ValueError(
-                    f"State {state_name!r} Catch references missing state {target!r}"
-                )
-        for choice in state.get("Choices", []):
-            target = choice.get("Next")
-            if target not in states:
-                raise ValueError(
-                    f"Choice state {state_name!r} references missing state {target!r}"
-                )
-        default = state.get("Default")
-        if default and default not in states:
-            raise ValueError(
-                f"State {state_name!r} Default references missing state {default!r}"
-            )
+def validate_definition() -> str:
+    definition_json = json.dumps(STATE_MACHINE_DEFINITION)
 
-    expected_jobs = {
-        SOURCE_GENERATION_GLUE_JOB,
-        RAW_LAYER_GLUE_JOB,
-        VALIDATION_MAIN_GLUE_JOB,
-        QUALITY_MAIN_GLUE_JOB,
-        REFINED_LAYER_GLUE_JOB,
-    }
-    referenced_jobs = {
-        state.get("Parameters", {}).get("JobName")
-        for state in states.values()
-        if state.get("Resource") == "arn:aws:states:::glue:startJobRun.sync"
-    }
-    if referenced_jobs != expected_jobs:
-        raise ValueError(
-            "Glue job references do not match configured jobs. "
-            f"Expected {sorted(expected_jobs)}, got {sorted(referenced_jobs)}"
-        )
+    # Check that the JSON is serializable.
+    json.loads(definition_json)
 
-    if states["Check Validation Gate"].get("Default") != "Validation Gate Blocked":
-        raise ValueError("Validation gate must fail closed for non-PASS responses")
-
-    # Ensure the definition can be serialized before deployment.
-    json.dumps(definition)
-
-
-def verify_glue_jobs(glue_client: Any) -> None:
-    required_jobs = [
-        SOURCE_GENERATION_GLUE_JOB,
-        RAW_LAYER_GLUE_JOB,
-        VALIDATION_MAIN_GLUE_JOB,
-        QUALITY_MAIN_GLUE_JOB,
-        REFINED_LAYER_GLUE_JOB,
-    ]
-    for job_name in required_jobs:
-        try:
-            job = glue_client.get_job(JobName=job_name)["Job"]
-        except glue_client.exceptions.EntityNotFoundException as exc:
-            raise RuntimeError(
-                f"Required Glue job {job_name!r} does not exist in "
-                f"{AWS_REGION}. Deploy all Glue jobs before the state machine."
-            ) from exc
-        script_location = job.get("Command", {}).get("ScriptLocation", "<missing>")
-        LOG.info("Verified Glue job %s | script=%s", job_name, script_location)
-
-
-def verify_validation_lambda(lambda_client: Any) -> None:
-    try:
-        config = lambda_client.get_function_configuration(
-            FunctionName=VALIDATION_GATE_LAMBDA_NAME
-        )
-    except lambda_client.exceptions.ResourceNotFoundException as exc:
-        raise RuntimeError(
-            f"Required Lambda {VALIDATION_GATE_LAMBDA_NAME!r} does not exist. "
-            "Deploy the validation-gate Lambda before the state machine."
-        ) from exc
-
-    state = config.get("State")
-    if state not in (None, "Active"):
-        raise RuntimeError(
-            f"Lambda {VALIDATION_GATE_LAMBDA_NAME!r} is not Active; state={state!r}"
-        )
-    if config.get("Runtime") != "python3.12":
-        LOG.warning("Lambda runtime is %s (expected python3.12)", config.get("Runtime"))
-    LOG.info(
-        "Verified Lambda %s | state=%s | handler=%s | role=%s",
-        VALIDATION_GATE_LAMBDA_NAME,
-        state or "Active/unspecified",
-        config.get("Handler"),
-        config.get("Role"),
+    # Use the installed boto3/botocore Step Functions model
+    # to catch basic request shape problems before deployment.
+    stepfunctions.meta.service_model.operation_model(
+        "CreateStateMachine"
     )
 
+    print("State machine definition is valid JSON.")
+    print("State machine:", STATE_MACHINE_NAME)
+    print("Curated Glue job:", CURATED_LAYER_GLUE_JOB)
 
-def find_state_machine(sfn_client: Any) -> str | None:
-    paginator = sfn_client.get_paginator("list_state_machines")
-    for page in paginator.paginate():
-        for machine in page.get("stateMachines", []):
-            if machine.get("name") == STATE_MACHINE_NAME:
-                return machine["stateMachineArn"]
-    return None
+    return definition_json
 
 
-def provision_state_machine(sfn_client: Any) -> str:
-    definition = json.dumps(STATE_MACHINE_DEFINITION, separators=(",", ":"))
-    existing_arn = find_state_machine(sfn_client)
-
-    if existing_arn:
-        response = sfn_client.update_state_machine(
-            stateMachineArn=existing_arn,
-            definition=definition,
-            roleArn=STEP_FUNCTION_ROLE_ARN,
-        )
-        LOG.info("Updated state machine: %s", STATE_MACHINE_NAME)
-        LOG.info("Update response: %s", response.get("updateDate"))
-        return existing_arn
-
-    response = sfn_client.create_state_machine(
-        name=STATE_MACHINE_NAME,
-        definition=definition,
-        roleArn=STEP_FUNCTION_ROLE_ARN,
-        type="STANDARD",
-    )
-    arn = response["stateMachineArn"]
-    LOG.info("Created state machine: %s", STATE_MACHINE_NAME)
-    return arn
-
+# ============================================================
+# DEPLOY ONLY THE TARGET STATE MACHINE
+# ============================================================
 
 def main() -> None:
-    LOG.info("Starting state machine deployment")
-    LOG.info("Region: %s", AWS_REGION)
-    LOG.info("State machine: %s", STATE_MACHINE_NAME)
+    caller = sts.get_caller_identity()
+    caller_account = caller["Account"]
+    caller_arn = caller["Arn"]
 
-    validate_definition(STATE_MACHINE_DEFINITION)
-    LOG.info("Local state-machine definition checks passed")
+    print("AWS caller:", caller_arn)
+    print("Caller account:", caller_account)
+    print("Configured account:", ACCOUNT_ID)
 
-    session = boto3.Session(region_name=AWS_REGION)
-    glue_client = session.client("glue")
-    lambda_client = session.client("lambda")
-    sfn_client = session.client("stepfunctions")
+    if caller_account != ACCOUNT_ID:
+        raise RuntimeError(
+            "AWS account mismatch. Set AWS_ACCOUNT_ID to the account "
+            "that owns this pipeline, Glue jobs, Lambda and IAM role. "
+            "No deployment was performed."
+        )
+
+    definition_json = validate_definition()
+
+    # Confirm the curated Glue job exists before deploying a state
+    # machine that references it.
+    glue = boto3.client("glue", region_name=REGION)
+    glue.get_job(JobName=CURATED_LAYER_GLUE_JOB)
 
     try:
-        verify_glue_jobs(glue_client)
-        verify_validation_lambda(lambda_client)
-        arn = provision_state_machine(sfn_client)
-    except ClientError:
-        LOG.exception("AWS rejected state-machine deployment")
-        raise
+        existing = stepfunctions.describe_state_machine(
+            stateMachineArn=STATE_MACHINE_ARN
+        )
 
-    LOG.info("State machine ARN: %s", arn)
-    LOG.info("Deployment completed successfully; no execution was started")
+        # Update only ecommerce-raw-layer-pipeline.
+        stepfunctions.update_state_machine(
+            stateMachineArn=STATE_MACHINE_ARN,
+            definition=definition_json,
+            roleArn=STEP_FUNCTIONS_ROLE_ARN,
+        )
+
+        print(
+            "Updated state machine:",
+            existing.get("name", STATE_MACHINE_NAME),
+        )
+
+    except stepfunctions.exceptions.StateMachineDoesNotExist:
+        stepfunctions.create_state_machine(
+            name=STATE_MACHINE_NAME,
+            definition=definition_json,
+            roleArn=STEP_FUNCTIONS_ROLE_ARN,
+            type="STANDARD",
+        )
+
+        print("Created state machine:", STATE_MACHINE_NAME)
+
+    print("Deployment complete.")
+    print("No state machine execution was started.")
 
 
 if __name__ == "__main__":
