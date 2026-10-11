@@ -37,7 +37,7 @@ STATE_MACHINE_NAME = "ecommerce-raw-layer-pipeline"
 # Your recent terminal error showed account 210856421090,
 # while earlier configuration referenced 256130491261.
 # Verify the correct account before deployment.
-ACCOUNT_ID = os.environ.get("AWS_ACCOUNT_ID", "210856421090")
+ACCOUNT_ID = os.environ.get("AWS_ACCOUNT_ID", "256130491261")
 
 STEP_FUNCTIONS_ROLE_ARN = (
     f"arn:aws:iam::{ACCOUNT_ID}:role/"
