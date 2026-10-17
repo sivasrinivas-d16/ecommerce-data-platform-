@@ -1,0 +1,5 @@
+{
+  "ResultConfigurationUpdates": {
+    "OutputLocation": "s3://ecommerce-data-platform-version1/analytics/athena-results/"
+  }
+}

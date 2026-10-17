@@ -473,11 +473,10 @@ fact_events = select_existing(
 # eligible revenue and reported separately in quality-related metrics.
 orders_kpi = orders.withColumn(
     "is_sales_eligible_order",
-    (F.upper(F.trim(F.col("order_status"))) == "COMPLETED")
+    (F.upper(F.trim(F.col("order_status"))) == "DELIVERED")
+    & (F.upper(F.trim(F.col("payment_status"))) == "PAID")
     & (
-        F.upper(
-            F.trim(F.col("order_data_quality_status"))
-        ) == "VALID"
+        F.upper(F.trim(F.col("order_data_quality_status"))) == "VALID"
     )
     & (F.col("order_amount_valid") == F.lit(True))
     & F.col("order_id").isNotNull()
